@@ -18,6 +18,10 @@ Download the IPA from the linked post. Updates and release announcements: [@glon
 
 ## Pixie
 
+<p align="left">
+  <img src="Images/pixie-manager.gif" width="200" alt="Pixie Manager downloading artist releases">
+</p>
+
 - Native offline downloads for tracks, albums and playlists.
 - Download the album of the currently playing track from the manager.
 - **Vitrine settings → Pixie Download Manager**: current-track actions, with download status inside **Audio diagnostics** and one **Send log** action for JSON diagnostic export.
