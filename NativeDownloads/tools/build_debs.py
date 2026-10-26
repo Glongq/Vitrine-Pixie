@@ -112,7 +112,7 @@ def main():
             PROJECT/'vitrine-upstream/tweak/Sources/Core/SGRebind.m',
             '-framework', 'AudioToolbox', '-framework', 'Foundation', '-framework', 'UIKit',
             '-framework', 'AVFAudio', '-framework', 'CoreGraphics', '-framework', 'AVFoundation',
-            '-framework', 'CoreMedia', '-framework', 'Network', '-framework', 'CydiaSubstrate',
+            '-framework', 'CoreMedia', '-framework', 'Network', '-framework', 'ImageIO', '-framework', 'QuartzCore', '-framework', 'CydiaSubstrate',
             '-Wl,-rpath,'+framework_path, '-Wl,-install_name,@rpath/SpotifyAudioProbe.dylib', '-o', companion)
         companion_dependencies = subprocess.check_output(['otool', '-L', str(companion)], text=True)
         substrate = '/Library/Frameworks/CydiaSubstrate.framework/CydiaSubstrate'

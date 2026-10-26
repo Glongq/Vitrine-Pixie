@@ -403,7 +403,7 @@ static UITableViewCell *SAPPlainSettingsCell(NSString *label,NSString *value) {
         NSDictionary *mode=self.snapshot[@"key_request_mode"];
         return [NSString stringWithFormat:@"%@\n\n5 licenses = up to 5 devices with offline music.\n\nOnly change settings in this menu if downloads are not working.",mode[@"detail"]?:@""];
     }
-    if(section==3)return @"Spotify 9.1.90 · Vitrine-Pixie v1.2.1.";
+    if(section==3)return @"Spotify 9.1.90 · Vitrine-Pixie v1.3.";
     if(section==2)return @"Enable Diagnostics for detailed passive events.";
     return nil;
 }

@@ -6,6 +6,7 @@ NSDictionary *SAPKeyRequestModeReport(void);
 void SAPSetKeyRequestMode(NSInteger mode, void (^completion)(BOOL changed, NSString *reason));
 void SAPReadNativeOfflineQuota(void (^completion)(NSDictionary *));
 void SAPPrepareNativeOffline(BOOL (^stillRequested)(void), void (^completion)(BOOL, NSString *));
+BOOL SAPSubmitNativeAlbumDownload(NSString *albumURI,NSArray<NSString *> *trackURIs,NSString **reason);
 NSDictionary *SAPNativeOfflineReport(void);
 void SAPSampleNativeOffline(void);
 void SAPReadNativeTrackState(NSString *uri);

@@ -69,8 +69,8 @@ def main():
         "-isysroot", sdk, "-fobjc-arc", "-std=gnu11", "-O2", "-fvisibility=hidden",
         "-Wall", "-Wextra", "-Wno-unused-parameter", "-Wno-nullability-completeness",
         "-Werror=implicit-function-declaration", "-Isrc",
-        "src/AudioProbe.c", "src/Diagnostics.m", "src/Localization.m", "src/AVAudioHooks.m", "src/SourceGraph.c", "src/OfflineFlags.m", "src/WireProto.m", "src/OfflineConfig.m", "src/TrackJournal.m", "src/NativeErrorLog.m", "src/PlayerTrace.m", "src/NativeOffline.m", "src/TrackDownload.m", "src/AudioProbeUI.m", "src/DownloadSettingsUI.m", "src/SupportLog.m", "src/DownloadCompatibility.m", "src/OfflineDevices.m", "src/DiagnosticTrace.m", "src/TracePlatform.m", "src/NativeKeyTrace.m",
-        "-framework", "AudioToolbox", "-framework", "Foundation", "-framework", "UIKit", "-framework", "AVFAudio", "-framework", "CoreGraphics", "-framework", "AVFoundation", "-framework", "CoreMedia", "-framework", "Network",
+        "src/AudioProbe.c", "src/Diagnostics.m", "src/Localization.m", "src/AVAudioHooks.m", "src/SourceGraph.c", "src/OfflineFlags.m", "src/WireProto.m", "src/OfflineConfig.m", "src/TrackJournal.m", "src/NativeErrorLog.m", "src/PlayerTrace.m", "src/NativeOffline.m", "src/NativeAlbumCommand.m", "src/TrackDownload.m", "src/AudioProbeUI.m", "src/DownloadSettingsUI.m", "src/SupportLog.m", "src/DownloadCompatibility.m", "src/OfflineDevices.m", "src/DiagnosticTrace.m", "src/TracePlatform.m", "src/NativeKeyTrace.m",
+        "-framework", "AudioToolbox", "-framework", "Foundation", "-framework", "UIKit", "-framework", "AVFAudio", "-framework", "CoreGraphics", "-framework", "AVFoundation", "-framework", "CoreMedia", "-framework", "Network", "-framework", "ImageIO", "-framework", "QuartzCore",
         "-Wl,-install_name,@rpath/SpotifyAudioProbe.dylib", "-o", library)
     run("codesign", "--force", "--sign", "-", "--timestamp=none", library)
     with ZipFile(source) as original:

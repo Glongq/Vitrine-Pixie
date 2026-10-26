@@ -12,6 +12,7 @@
 #import "DiagnosticTrace.h"
 #import "NativeTracePatch.h"
 #import "NativeSetupStatus.h"
+#import "NativeAlbumCommand.h"
 #import <UIKit/UIKit.h>
 #import <objc/runtime.h>
 #import <objc/message.h>
@@ -399,6 +400,15 @@ void SAPInstallNativeOffline(void) {
         // No permanent quota timer and no periodic setter invocation.
         SAPJournalSetQuotaSampler(^{SAPSampleNativeOffline();});
     });
+}
+BOOL SAPSubmitNativeAlbumDownload(NSString *albumURI,NSArray<NSString *> *trackURIs,NSString **reason) {
+    SAPInstallNativeOffline();
+    id wrapper=nativeWrapper;NSString *failure=nil;
+    SAPJournalNoteAction(@"artist_native_album_handler_requested",@{@"album_uri":albumURI?:@"",@"track_count":@(trackURIs.count),@"automatic_replay":@NO});
+    BOOL returned=SAPInvokeNativeAlbumCommand(wrapper,albumURI,trackURIs,&failure);
+    SAPJournalNoteAction(@"artist_native_album_handler_returned",@{@"album_uri":albumURI?:@"",@"handler_returned":@(returned),
+        @"track_count":@(trackURIs.count),@"download_completion_confirmed":@NO,@"error":failure?:@""});
+    if(reason)*reason=failure;return returned;
 }
 void SAPPrepareNativeOffline(BOOL (^stillRequested)(void),void (^completion)(BOOL,NSString *)) {
     SAPInstallNativeOffline();

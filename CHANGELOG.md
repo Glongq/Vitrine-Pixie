@@ -1,5 +1,12 @@
 # Changelog
 
+## 2026-10-26 — Vitrine beta 16 + Pixie Manager v1.3
+
+- Updated Vitrine to beta 16
+- Download releases directly from artist profiles, download separately or into a new or existing playlist
+
+Source update only. No IPA or DEB is uploaded with this update.
+
 ## 2026-10-23 — Pixie Manager v1.2.1 sources
 
 - Updated Vitrine from beta 13 to beta 14

@@ -52,11 +52,13 @@ static double pollSeconds = 0.01, startTimeoutSeconds = 0.12, totalTimeoutSecond
 static double candidateTimeoutSeconds = 0.03;
 static double errorSettleSeconds = 0.12;
 static double serviceTimeoutSeconds = 0.04;
+static double streamFirstResponseTimeoutSeconds = 0.12;
 #else
 static double pollSeconds = 1, startTimeoutSeconds = 30, totalTimeoutSeconds = 600;
 static double candidateTimeoutSeconds = 3;
 static double errorSettleSeconds = 30;
 static double serviceTimeoutSeconds = 8;
+static double streamFirstResponseTimeoutSeconds = 8;
 #endif
 
 // Observe unanswered application calls without retaining the app's lifetime or
@@ -179,19 +181,194 @@ static void acquireHandle(id handle) {
     if (signature(object_getClass(handle), sel, 2, 'v', &method)) ((void (*)(id, SEL))objc_msgSend)(handle, sel);
 }
 
-@interface SAPReadOnlyCall : NSObject
+@interface SAPReadOnlyCall : NSObject { atomic_bool _cancelled; }
 @property(nonatomic,copy) NSString *serviceName, *method;
 @property(nonatomic,strong) NSData *payload;
 @property(nonatomic,strong) NSArray *endpoints;
 @property(nonatomic,strong) id lifetime;
 @property(nonatomic,strong) dispatch_source_t deadline;
 @property(nonatomic,copy) void (^completion)(NSData *, NSString *);
+@property(nonatomic,copy) void (^commandCompletion)(NSData *, NSString *, SAPCommandInvocationDisposition);
 @property(nonatomic) NSUInteger endpointIndex, attempt;
-@property(nonatomic) BOOL finished;
+@property(nonatomic) BOOL finished, invoked;
 @property(nonatomic) SAPTraceID traceOperation;
+- (BOOL)markCancelled;
+- (BOOL)isCancelled;
 @end
-@implementation SAPReadOnlyCall @end
+@implementation SAPReadOnlyCall
+- (instancetype)init { if((self=[super init])) atomic_init(&_cancelled,false); return self; }
+- (BOOL)markCancelled { return !atomic_exchange(&_cancelled,true); }
+- (BOOL)isCancelled { return atomic_load(&_cancelled); }
+@end
 static NSMutableSet<SAPReadOnlyCall *> *readOnlyCalls;
+
+@interface SAPReadOnlyStream : NSObject { atomic_bool _cancelled; }
+@property(nonatomic,copy) NSString *serviceName, *method;
+@property(nonatomic,strong) NSData *payload;
+@property(nonatomic,strong) id endpoint, lifetime;
+@property(nonatomic,strong) NSArray *endpoints, *verifiedEndpoints;
+@property(nonatomic,strong) dispatch_source_t deadline;
+@property(nonatomic,copy) void (^onResponse)(NSData *, NSString *);
+@property(nonatomic) BOOL finished, receivedFirstResponse;
+@property(nonatomic) NSUInteger endpointIndex, attempt, candidateCount;
+- (BOOL)markCancelled;
+- (BOOL)isCancelled;
+@end
+@implementation SAPReadOnlyStream
+- (instancetype)init { if((self=[super init])) atomic_init(&_cancelled,false); return self; }
+- (BOOL)markCancelled { return !atomic_exchange(&_cancelled,true); }
+- (BOOL)isCancelled { return atomic_load(&_cancelled); }
+@end
+static NSMutableSet<SAPReadOnlyStream *> *readOnlyStreams;
+
+static BOOL supportedReadOnlyStream(NSString *serviceName, NSString *method) {
+    return [serviceName isEqual:service] &&
+        ([method isEqual:@"SubscribeContexts"] || [method isEqual:@"SubscribeContextsProgress"] || [method isEqual:@"SubscribeItems"]);
+}
+
+static void noteStream(SAPReadOnlyStream *stream,NSString *stage,NSString *reason) {
+    if(!SAPDiagnosticsEnabled())return;
+    SEL selector=NSSelectorFromString(@"callStream:method:payload:onResponse:");Method method;
+    BOOL valid=stream.endpoint && signature(object_getClass(stream.endpoint),selector,6,'@',&method);
+    SAPJournalNoteAction(@"artist_stream_transport",@{@"stage":stage,@"reason":reason?:@"",@"method":stream.method?:@"",
+        @"endpoint_present":@(stream.endpoint!=nil),@"endpoint_class":stream.endpoint?NSStringFromClass(object_getClass(stream.endpoint)):@"",
+        @"endpoint_identity":stream.endpoint?[NSString stringWithFormat:@"%p",(__bridge void *)stream.endpoint]:@"",
+        @"stream_signature_valid":@(valid),@"candidates":@(stream.candidateCount),@"candidate_attempt":@(stream.endpointIndex)});
+}
+static void finishReadOnlyStream(SAPReadOnlyStream *stream, NSString *error) {
+    if (stream.finished) return;
+    noteStream(stream,@"cancel",error?:@"caller_cancelled_or_replaced");
+    stream.finished = YES;
+    stream.attempt++;
+    if (stream.deadline) { dispatch_source_cancel(stream.deadline); stream.deadline = nil; }
+    cancelHandle(stream.lifetime); stream.lifetime = nil;
+    stream.endpoint = nil; stream.endpoints=nil;stream.verifiedEndpoints=nil;stream.payload = nil;
+    void (^callback)(NSData *, NSString *) = stream.onResponse;
+    if (error && callback && !stream.isCancelled) dispatch_async(dispatch_get_main_queue(), ^{
+        if (!stream.isCancelled) callback(nil, error);
+    });
+    stream.onResponse = nil;
+    [readOnlyStreams removeObject:stream];
+}
+
+static void deliverReadOnlyStreamResponse(SAPReadOnlyStream *stream, NSData *response) {
+    if (stream.finished || stream.isCancelled) {
+        if (stream.isCancelled) finishReadOnlyStream(stream, nil);
+        return;
+    }
+    if (![response isKindOfClass:NSData.class] || response.length > 8 * 1024 * 1024) {
+        finishReadOnlyStream(stream, @"Invalid or oversized Spotify stream response");
+        return;
+    }
+    stream.receivedFirstResponse = YES;
+    // The active stream owns its endpoint. Candidate snapshots are retained
+    // only during this finite handoff, never by a global strong cache.
+    stream.endpoints=nil;stream.verifiedEndpoints=nil;
+    if (stream.deadline) { dispatch_source_cancel(stream.deadline); stream.deadline = nil; }
+    void (^callback)(NSData *, NSString *) = stream.onResponse;
+    if (callback) dispatch_async(dispatch_get_main_queue(), ^{
+        if (!stream.isCancelled) callback(response, nil);
+    });
+}
+
+static void tryReadOnlyStream(SAPReadOnlyStream *stream,NSString *reason);
+static void openReadOnlyStream(SAPReadOnlyStream *stream,NSUInteger attempt) {
+    if(stream.finished || stream.isCancelled){finishReadOnlyStream(stream,nil);return;}
+    if(stream.deadline){dispatch_source_cancel(stream.deadline);stream.deadline=nil;}
+    cancelHandle(stream.lifetime);stream.lifetime=nil;
+    SEL selector=NSSelectorFromString(@"callStream:method:payload:onResponse:");
+    BOOL (^responseBlock)(NSData *)=^BOOL(NSData *response){
+        dispatch_async(worker,^{if(!stream.finished && stream.attempt==attempt)deliverReadOnlyStreamResponse(stream,response);});
+        return !stream.isCancelled;
+    };
+    noteStream(stream,@"subscribe",nil);
+    @try {
+        stream.lifetime=((id (*)(id,SEL,id,id,id,id))objc_msgSend)(stream.endpoint,selector,stream.serviceName,stream.method,stream.payload,responseBlock);
+        if(!stream.lifetime){tryReadOnlyStream(stream,@"stream_lifetime_missing");return;}
+        acquireHandle(stream.lifetime);
+    } @catch(__unused NSException *exception){tryReadOnlyStream(stream,@"stream_exception");return;}
+    if(stream.isCancelled){finishReadOnlyStream(stream,nil);return;}
+    stream.deadline=SAPScheduleDeadline(worker,streamFirstResponseTimeoutSeconds,^{
+        if(!stream.finished && stream.attempt==attempt && !stream.receivedFirstResponse)tryReadOnlyStream(stream,@"first_response_timeout");
+    });
+}
+static void tryReadOnlyStream(SAPReadOnlyStream *stream,NSString *reason) {
+    if(stream.finished)return;
+    if(stream.isCancelled){finishReadOnlyStream(stream,nil);return;}
+    noteStream(stream,@"candidate_finished",reason);
+    if(stream.deadline){dispatch_source_cancel(stream.deadline);stream.deadline=nil;}
+    cancelHandle(stream.lifetime);stream.lifetime=nil;stream.endpoint=nil;
+    NSUInteger attempt=++stream.attempt;
+    if(stream.receivedFirstResponse || stream.endpointIndex>=stream.endpoints.count){
+        finishReadOnlyStream(stream,@"No Spotify stream candidate passed read-only verification.");return;
+    }
+    stream.endpoint=stream.endpoints[stream.endpointIndex++];
+    if([stream.verifiedEndpoints containsObject:stream.endpoint]){openReadOnlyStream(stream,attempt);return;}
+    // An observed candidate is not proof of a working route. Probe only an
+    // unproven fallback, using the corresponding exact read-only request.
+    SEL selector=NSSelectorFromString(@"callSingle:method:payload:onResponse:");Method method;
+    if(!signature(object_getClass(stream.endpoint),selector,6,'@',&method)){tryReadOnlyStream(stream,@"single_signature_mismatch");return;}
+    NSString *readMethod=[stream.method isEqual:@"SubscribeItems"]?@"GetItems":[stream.method isEqual:@"SubscribeContexts"]?@"GetContexts":@"GetContextsProgress";
+    noteStream(stream,@"verify",nil);
+    void (^responseBlock)(NSData *)=^(NSData *response){dispatch_async(worker,^{
+        if(stream.finished || stream.attempt!=attempt)return;
+        if(stream.isCancelled){finishReadOnlyStream(stream,nil);return;}
+        NSArray *fields=[response isKindOfClass:NSData.class] && response.length<=8*1024*1024?SAPProtoFields(response):nil;
+        if(!fields || ([readMethod isEqual:@"GetContexts"] && SAPProtoNumber(fields,2,0))){tryReadOnlyStream(stream,@"invalid_verification_response");return;}
+        rememberTransport(stream.endpoint,NO,YES);openReadOnlyStream(stream,attempt);
+    });};
+    @try {
+        stream.lifetime=((id (*)(id,SEL,id,id,id,id))objc_msgSend)(stream.endpoint,selector,stream.serviceName,readMethod,stream.payload,responseBlock);
+        if(!stream.lifetime){tryReadOnlyStream(stream,@"verification_lifetime_missing");return;}
+        acquireHandle(stream.lifetime);
+    } @catch(__unused NSException *exception){tryReadOnlyStream(stream,@"verification_exception");return;}
+    if(stream.isCancelled){finishReadOnlyStream(stream,nil);return;}
+    stream.deadline=SAPScheduleDeadline(worker,serviceTimeoutSeconds,^{if(!stream.finished && stream.attempt==attempt)tryReadOnlyStream(stream,@"verification_timeout");});
+}
+
+dispatch_block_t SAPSubscribeReadOnlyService(NSString *serviceName, NSString *method, NSData *payload,
+                                              void (^onResponse)(NSData *response, NSString *error)) {
+    SAPInstallTrackDownloader();
+    SAPReadOnlyStream *stream = [SAPReadOnlyStream new];
+    stream.onResponse = onResponse;
+    if (!supportedReadOnlyStream(serviceName, method) || ![payload isKindOfClass:NSData.class] || payload.length > 8 * 1024 * 1024) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            if (!stream.isCancelled && stream.onResponse) stream.onResponse(nil, @"Unsupported or invalid Spotify stream request");
+            stream.onResponse = nil;
+        });
+        return ^{ [stream markCancelled]; };
+    }
+    stream.serviceName = serviceName; stream.method = method; stream.payload = payload;
+    dispatch_async(worker, ^{
+        if (stream.isCancelled) { finishReadOnlyStream(stream, nil); return; }
+        if (!readOnlyStreams) readOnlyStreams = [NSMutableSet set];
+        [readOnlyStreams addObject:stream];
+        NSArray *available=transportCandidates();NSMutableArray *verified=[NSMutableArray array],*usable=[NSMutableArray array];
+        os_unfair_lock_lock(&candidatesLock);id proven=provenTransport,bridge=provenBridge;os_unfair_lock_unlock(&candidatesLock);
+        if(proven)[verified addObject:proven];
+        // Existing stream owners remain alive until replacement selection is
+        // queued. They are verified only for this active observation handoff.
+        for(SAPReadOnlyStream *old in readOnlyStreams)if(old!=stream && !old.finished && old.receivedFirstResponse && old.endpoint && ![verified containsObject:old.endpoint])[verified addObject:old.endpoint];
+        if(bridge && ![verified containsObject:bridge])[verified addObject:bridge];
+        NSMutableOrderedSet *ordered=[NSMutableOrderedSet orderedSetWithArray:verified];[ordered addObjectsFromArray:available];
+        SEL selector=NSSelectorFromString(@"callStream:method:payload:onResponse:");Method method;
+        for(id endpoint in ordered){
+            stream.endpoint=endpoint;stream.candidateCount=ordered.count;
+            if(!signature(object_getClass(endpoint),selector,6,'@',&method)){noteStream(stream,@"candidate_rejected",@"stream_signature_mismatch");continue;}
+            [usable addObject:endpoint];if(usable.count==2)break;
+        }
+        if(SAPDiagnosticsEnabled()){
+            BOOL provenSignature=proven && signature(object_getClass(proven),selector,6,'@',&method);
+            SAPJournalNoteAction(@"artist_stream_transport_selection",@{@"method":stream.method,@"proven_endpoint_present":@(proven!=nil),@"proven_endpoint_class":proven?NSStringFromClass(object_getClass(proven)):@"",@"proven_stream_signature_valid":@(provenSignature),@"candidates":@(ordered.count),@"usable_candidates":@(usable.count),@"max_candidate_attempts":@2});
+        }
+        stream.endpoint=nil;stream.endpoints=usable;stream.verifiedEndpoints=verified;
+        tryReadOnlyStream(stream,@"initial");
+    });
+    return ^{
+        if (![stream markCancelled]) return;
+        dispatch_async(worker, ^{ if (!stream.finished) finishReadOnlyStream(stream, nil); });
+    };
+}
 
 @interface SAPAlbumDownloadCall : NSObject
 @property(nonatomic,copy) NSString *uri;
@@ -222,13 +399,23 @@ static void finishReadOnlyCall(SAPReadOnlyCall *call, NSData *response, NSString
     if (call.deadline) { dispatch_source_cancel(call.deadline); call.deadline = nil; }
     cancelHandle(call.lifetime); call.lifetime = nil;
     void (^completion)(NSData *, NSString *) = call.completion;
-    call.completion = nil; call.endpoints = nil; call.payload = nil;
+    void (^commandCompletion)(NSData *, NSString *, SAPCommandInvocationDisposition) = call.commandCompletion;
+    SAPCommandInvocationDisposition disposition=call.invoked?SAPCommandInvoked:SAPCommandNotInvoked;
+    call.completion = nil; call.commandCompletion=nil; call.endpoints = nil; call.payload = nil;
     [readOnlyCalls removeObject:call];
-    if (completion) dispatch_async(dispatch_get_main_queue(), ^{ SAPTraceWithOperation(call.traceOperation,^{completion(response,error);}); });
+    if ((completion || commandCompletion) && !call.isCancelled) dispatch_async(dispatch_get_main_queue(), ^{
+        // Cancellation may race with a response already queued for main.
+        if(call.isCancelled)return;
+        SAPTraceWithOperation(call.traceOperation,^{
+            if(completion)completion(response,error);
+            if(commandCompletion)commandCompletion(response,error,disposition);
+        });
+    });
 }
 
 static void tryReadOnlyCall(SAPReadOnlyCall *call) {
     if (call.finished) return;
+    if (call.isCancelled) { finishReadOnlyCall(call,nil, nil); return; }
     if (call.deadline) { dispatch_source_cancel(call.deadline); call.deadline = nil; }
     cancelHandle(call.lifetime); call.lifetime = nil;
     if (call.endpointIndex >= call.endpoints.count) {
@@ -246,7 +433,10 @@ static void tryReadOnlyCall(SAPReadOnlyCall *call) {
     SAP_TRACE("service_call","attempt",call.traceOperation,@{@"method":call.method,@"service":call.serviceName,@"attempt":@(attempt),@"transport":NSStringFromClass(object_getClass(endpoint)),@"replay_policy":call.endpoints.count==1?@"single_endpoint":@"read_only_fallback"});
     void (^responseBlock)(NSData *) = ^(NSData *response) {
         dispatch_async(worker, ^{
-            if (call.finished || call.attempt != attempt) return;
+            if (call.finished || call.isCancelled || call.attempt != attempt) {
+                if(!call.finished && call.isCancelled)finishReadOnlyCall(call,nil,nil);
+                return;
+            }
             if (![response isKindOfClass:NSData.class] || response.length > 8 * 1024 * 1024) {
                 tryReadOnlyCall(call);
                 return;
@@ -256,57 +446,142 @@ static void tryReadOnlyCall(SAPReadOnlyCall *call) {
         });
     };
     @try {
-        SAPTraceWithOperation(call.traceOperation,^{call.lifetime=((id (*)(id,SEL,id,id,id,id))objc_msgSend)(endpoint,selector,call.serviceName,call.method,call.payload,responseBlock);});
+        SAPTraceWithOperation(call.traceOperation,^{
+            // From this point a failed response cannot prove the command was unsent.
+            call.invoked=YES;
+            call.lifetime=((id (*)(id,SEL,id,id,id,id))objc_msgSend)(endpoint,selector,call.serviceName,call.method,call.payload,responseBlock);
+        });
         acquireHandle(call.lifetime);
     } @catch (__unused NSException *exception) {
         tryReadOnlyCall(call);
         return;
     }
+    if(call.isCancelled) { finishReadOnlyCall(call,nil,nil); return; }
     call.deadline = SAPScheduleDeadline(worker, serviceTimeoutSeconds, ^{
         if (!call.finished && call.attempt == attempt) tryReadOnlyCall(call);
     });
 }
 
-void SAPCallReadOnlyService(NSString *serviceName, NSString *method, NSData *payload,
-                            void (^completion)(NSData *response, NSString *error)) {
+dispatch_block_t SAPCallReadOnlyServiceCancellable(NSString *serviceName, NSString *method, NSData *payload,
+                                                    void (^completion)(NSData *response, NSString *error)) {
     SAPInstallTrackDownloader();
+    SAPReadOnlyCall *call = [SAPReadOnlyCall new];
+    call.completion = completion;
     if (!serviceName.length || !method.length || ![payload isKindOfClass:NSData.class]) {
-        if (completion) dispatch_async(dispatch_get_main_queue(), ^{ completion(nil, @"Invalid metadata request"); });
-        return;
+        dispatch_async(dispatch_get_main_queue(), ^{
+            if(!call.isCancelled && call.completion)call.completion(nil, @"Invalid metadata request");
+            call.completion=nil;
+        });
+        return ^{ [call markCancelled]; };
     }
+    call.serviceName = serviceName; call.method = method; call.payload = payload;
     SAPTraceID parent=SAPTraceCurrentOperation();
     if(!parent&&SAPTraceIsActive())parent=SAPTraceBegin(@"read_only_service",@"pixie",@{@"service":serviceName,@"method":method});
+    call.traceOperation=parent;
     dispatch_async(worker, ^{
-        SAPReadOnlyCall *call = [SAPReadOnlyCall new];
-        call.serviceName = serviceName; call.method = method; call.payload = payload;
+        if(call.isCancelled) { finishReadOnlyCall(call,nil,nil); return; }
         call.endpoints = transportCandidates(); call.completion = completion;
-        call.traceOperation=parent;
         if (!readOnlyCalls) readOnlyCalls = [NSMutableSet set];
         [readOnlyCalls addObject:call];
         tryReadOnlyCall(call);
     });
+    return ^{
+        if(![call markCancelled])return;
+        dispatch_async(worker, ^{ if(!call.finished)finishReadOnlyCall(call,nil,nil); });
+    };
 }
-void SAPCallOfflineCommandOnce(NSString *method,NSData *payload,void (^completion)(NSData *,NSString *)) {
+void SAPCallReadOnlyService(NSString *serviceName, NSString *method, NSData *payload,
+                            void (^completion)(NSData *response, NSString *error)) {
+    SAPCallReadOnlyServiceCancellable(serviceName,method,payload,completion);
+}
+static BOOL explicitAlbumURI(NSString *uri) {
+    NSString *prefix=@"spotify:album:";
+    if(![uri isKindOfClass:NSString.class] || ![uri hasPrefix:prefix] || uri.length!=prefix.length+22)return NO;
+    NSCharacterSet *invalid=[NSCharacterSet characterSetWithCharactersInString:@"0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"].invertedSet;
+    return [[uri substringFromIndex:prefix.length]rangeOfCharacterFromSet:invalid].location==NSNotFound;
+}
+static void callExplicitServiceOnceWithDisposition(NSString *serviceName,NSString *method,NSData *payload,
+    void (^completion)(NSData *,NSString *,SAPCommandInvocationDisposition)) {
     SAPInstallTrackDownloader();
-    if(![method isEqual:@"SetOfflinePlaybackAllowed"] || ![payload isKindOfClass:NSData.class]) {
-        if(completion)dispatch_async(dispatch_get_main_queue(),^{completion(nil,@"Unsupported explicit offline command");});return;
-    }
+    BOOL offline=[serviceName isEqual:service];
+    BOOL playlist=[serviceName hasPrefix:@"spotify.playlist_esperanto.proto."];
+    NSString *requestedEvent=offline?@"offline_explicit_command_requested":playlist?@"playlist_explicit_command_requested":@"collection_explicit_command_requested";
+    NSString *replyEvent=offline?@"offline_explicit_command_reply":playlist?@"playlist_explicit_command_reply":@"collection_explicit_command_reply";
     SAPTraceID parent=SAPTraceCurrentOperation();
-    if(!parent&&SAPTraceIsActive())parent=SAPTraceBegin(@"explicit_offline_command",@"pixie",@{@"method":method});
+    if(!parent&&SAPTraceIsActive())parent=SAPTraceBegin(offline?@"explicit_offline_command":playlist?@"explicit_playlist_command":@"explicit_collection_command",@"pixie",@{@"service":serviceName,@"method":method});
     dispatch_async(worker,^{
         os_unfair_lock_lock(&candidatesLock);id endpoint=provenTransport;os_unfair_lock_unlock(&candidatesLock);
-        if(!endpoint){if(completion)dispatch_async(dispatch_get_main_queue(),^{completion(nil,@"No verified Spotify transport. Refresh the device state first.");});return;}
+        if(!endpoint){if(completion)dispatch_async(dispatch_get_main_queue(),^{completion(nil,@"No verified Spotify transport. Refresh the device state first.",SAPCommandNotInvoked);});return;}
         SAPReadOnlyCall *call=[SAPReadOnlyCall new];
-        call.serviceName=service;call.method=method;call.payload=payload;call.endpoints=@[endpoint];
+        call.serviceName=serviceName;call.method=method;call.payload=payload;call.endpoints=@[endpoint];
         call.traceOperation=parent;
-        call.completion=^(NSData *data,NSString *error){
-            SAPJournalNoteAction(@"offline_explicit_command_reply",@{@"method":method,@"response_received":@(data!=nil),@"response_bytes":@(data.length),@"error":error?:@"",@"automatic_replay":@NO});
-            if(completion)completion(data,error);
+        call.commandCompletion=^(NSData *data,NSString *error,SAPCommandInvocationDisposition disposition){
+            SAPJournalNoteAction(replyEvent,@{@"service":serviceName,@"method":method,@"response_received":@(data!=nil),@"response_bytes":@(data.length),@"error":error?:@"",@"automatic_replay":@NO,@"transport_invoked":@(disposition==SAPCommandInvoked)});
+            if(completion)completion(data,error,disposition);
         };
         if(!readOnlyCalls)readOnlyCalls=[NSMutableSet set];[readOnlyCalls addObject:call];
-        SAPJournalNoteAction(@"offline_explicit_command_requested",@{@"method":method,@"automatic_replay":@NO,@"transport_class":NSStringFromClass(object_getClass(endpoint))});
+        SAPJournalNoteAction(requestedEvent,@{@"service":serviceName,@"method":method,@"automatic_replay":@NO,@"transport_class":NSStringFromClass(object_getClass(endpoint))});
         tryReadOnlyCall(call); // Its endpoint list contains exactly one entry.
     });
+}
+static void callExplicitServiceOnce(NSString *serviceName,NSString *method,NSData *payload,void (^completion)(NSData *,NSString *)) {
+    callExplicitServiceOnceWithDisposition(serviceName,method,payload,^(NSData *data,NSString *error,SAPCommandInvocationDisposition disposition){if(completion)completion(data,error);});
+}
+void SAPCallOfflineCommandOnceWithDisposition(NSString *method,NSData *payload,
+    void (^completion)(NSData *,NSString *,SAPCommandInvocationDisposition)) {
+    BOOL albumCommand=NO;
+    if(([method isEqual:@"AddDownload"] || [method isEqual:@"RemoveDownload"]) && [payload isKindOfClass:NSData.class]) {
+        NSArray *fields=SAPProtoFields(payload);NSString *uri=SAPProtoString(fields,2);
+        NSString *playlistID=[uri hasPrefix:@"spotify:playlist:"]?[uri substringFromIndex:17]:nil;
+        NSCharacterSet *invalid=[NSCharacterSet characterSetWithCharactersInString:@"0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"].invertedSet;
+        BOOL playlist=playlistID.length==22 && [playlistID rangeOfCharacterFromSet:invalid].location==NSNotFound;
+        albumCommand=fields.count==1 && (explicitAlbumURI(uri) || playlist);
+    }
+    if((![method isEqual:@"SetOfflinePlaybackAllowed"] && !albumCommand) || ![payload isKindOfClass:NSData.class]) {
+        if(completion)dispatch_async(dispatch_get_main_queue(),^{completion(nil,@"Unsupported explicit offline command",SAPCommandNotInvoked);});return;
+    }
+    callExplicitServiceOnceWithDisposition(service,method,payload,completion);
+}
+void SAPCallOfflineCommandOnce(NSString *method,NSData *payload,void (^completion)(NSData *,NSString *)) {
+    SAPCallOfflineCommandOnceWithDisposition(method,payload,^(NSData *data,NSString *error,SAPCommandInvocationDisposition disposition){if(completion)completion(data,error);});
+}
+void SAPCallPlaylistModificationOnce(BOOL rootlist,NSData *payload,void (^completion)(NSData *,NSString *)) {
+    NSArray *outer=SAPProtoFields(payload),*request=SAPProtoFields(SAPProtoData(outer,2));
+    NSString *operation=SAPProtoString(request,1);BOOL valid=NO;
+    if(rootlist)valid=outer.count==1 && request.count>=3 && [operation isEqual:@"create"] && SAPProtoString(request,4).length && SAPProtoNumber(request,5,0)==1;
+    else {
+        NSString *uri=SAPProtoString(outer,1);NSString *identifier=[uri hasPrefix:@"spotify:playlist:"]?[uri substringFromIndex:17]:nil;
+        NSCharacterSet *invalid=[NSCharacterSet characterSetWithCharactersInString:@"0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"].invertedSet;
+        valid=identifier.length==22 && [identifier rangeOfCharacterFromSet:invalid].location==NSNotFound && [operation isEqual:@"add"] && [SAPProtoString(request,3)isEqual:@"end"];
+        NSUInteger count=0;for(NSDictionary *f in request)if([f[@"number"]unsignedIntValue]==7){
+            if([f[@"wire"]unsignedIntValue]!=2){valid=NO;continue;}
+            NSString *track=[[NSString alloc]initWithData:f[@"value"] encoding:NSUTF8StringEncoding];NSString *tid=[track hasPrefix:@"spotify:track:"]?[track substringFromIndex:14]:nil;
+            if(tid.length!=22 || [tid rangeOfCharacterFromSet:invalid].location!=NSNotFound)valid=NO;count++;
+        }valid=valid && count>0 && count<=100;
+    }
+    NSSet *allowed=[NSSet setWithArray:rootlist?@[@1,@4,@5,@12]:@[@1,@3,@7]];
+    for(NSDictionary *field in request)if(![allowed containsObject:field[@"number"]])valid=NO;
+    if(outer.count!=(rootlist?1:2))valid=NO;
+    if(!valid){if(completion)dispatch_async(dispatch_get_main_queue(),^{completion(nil,@"Invalid explicit playlist modification.");});return;}
+    callExplicitServiceOnce(rootlist?@"spotify.playlist_esperanto.proto.RootlistModificationService":@"spotify.playlist_esperanto.proto.PlaylistService",@"Modify",payload,completion);
+}
+void SAPSetPlaylistOfflineOnceWithDisposition(NSString *uri,BOOL enabled,
+    void (^completion)(NSData *,NSString *,SAPCommandInvocationDisposition)) {
+    NSString *identifier=[uri hasPrefix:@"spotify:playlist:"]?[uri substringFromIndex:17]:nil;
+    NSCharacterSet *invalid=[NSCharacterSet characterSetWithCharactersInString:@"0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"].invertedSet;
+    if(identifier.length!=22 || [identifier rangeOfCharacterFromSet:invalid].location!=NSNotFound){if(completion)dispatch_async(dispatch_get_main_queue(),^{completion(nil,@"Invalid playlist identity.",SAPCommandNotInvoked);});return;}
+    NSMutableData *payload=[SAPProtoBytes(1,[uri dataUsingEncoding:NSUTF8StringEncoding])mutableCopy];[payload appendData:SAPProtoInteger(3,enabled?1:2)];
+    callExplicitServiceOnceWithDisposition(@"spotify.playlist_esperanto.proto.PlaylistService",@"SetOfflineState",payload,completion);
+}
+void SAPSetPlaylistOfflineOnce(NSString *uri,BOOL enabled,void (^completion)(NSData *,NSString *)) {
+    SAPSetPlaylistOfflineOnceWithDisposition(uri,enabled,^(NSData *data,NSString *error,SAPCommandInvocationDisposition disposition){if(completion)completion(data,error);});
+}
+void SAPAddAlbumToLibraryOnce(NSString *albumURI,void (^completion)(NSData *,NSString *)) {
+    if(!explicitAlbumURI(albumURI)) {if(completion)dispatch_async(dispatch_get_main_queue(),^{completion(nil,@"Invalid album identity for Collection.Add.");});return;}
+    // collection_add_remove_items_request.proto: items=2, item.uri=1. This
+    // matches the 40-byte request made by the normal album button in log 22.
+    NSData *payload=SAPProtoBytes(2,SAPProtoBytes(1,[albumURI dataUsingEncoding:NSUTF8StringEncoding]));
+    callExplicitServiceOnce(@"spotify.collection_esperanto.proto.CollectionService",@"Add",payload,completion);
 }
 static NSString *errorName(uint64_t code) {
     switch (code) {

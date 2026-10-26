@@ -2,7 +2,7 @@
 
 Liquid Glass Spotify with **Pixie Download Manager**. Based on [Vitrine](https://github.com/My-Name-Is-Jeff/vitrine), with native offline downloads and a download manager.
 
-**Pixie Manager: v1.2.1** · **Spotify version: 9.1.90** · **Maintainer: [Glongq](https://github.com/Glongq)**
+**Pixie Manager: v1.3** · **Spotify version: 9.1.90** · **Maintainer: [Glongq](https://github.com/Glongq)**
 
 ## Downloads and updates
 
@@ -10,7 +10,7 @@ Liquid Glass Spotify with **Pixie Download Manager**. Based on [Vitrine](https:/
 
 Download the IPA from the linked post. Updates and release announcements: [@glongqforks](https://t.me/glongqforks). This repository contains source code and patches; no IPA files are hosted here. GitHub's “Source code” archives are not installable apps.
 
-**Jailbreak packages:** [rootless / rootful DEBs](https://github.com/Glongq/Vitrine-Pixie/releases/tag/pixie-9.1.90-jailbreak-1). These remain the previous release and have not been rebuilt from v1.2.1 sources.
+**Jailbreak packages:** [rootless / rootful DEBs](https://github.com/Glongq/Vitrine-Pixie/releases/tag/pixie-9.1.90-jailbreak-1). These remain the previous release and have not been rebuilt from v1.3 sources.
 
 **Regular IPA version: tested through LiveContainer and SideStore.**
 
@@ -32,20 +32,16 @@ See [CHANGELOG.md](CHANGELOG.md) for source updates.
 
 ## Compatibility
 
-The Pixie extension targets Spotify **9.1.90**, ARM64 UUID `fbce22c17e1b3e0d9be866ff9291943e`, with Vitrine **1.0.0-beta.14** as the base, pinned to commit `ebc1cbf6ee23a8ad839e60f04f3abf862f2ea85e`. The builder checks the executable UUID and instruction bytes. Other Spotify binaries require a separate port.
+The Pixie extension targets Spotify **9.1.90**, ARM64 UUID `fbce22c17e1b3e0d9be866ff9291943e`, with Vitrine **1.0.0-beta.16** as the base, pinned to commit `36d3b38ec39c0b8b696f1d2db026ca9e9939bf14`. The builder checks the executable UUID and instruction bytes. Other Spotify binaries require a separate port.
 
 Native downloads and album controls were checked on an iPhone 15 Pro Max, iOS 27.0.1, using LiveContainer. Vitrine's Liquid Glass redesign requires iOS 26 or later. Long-term offline licence renewal has not been verified.
 
-## Latest update — Pixie Manager v1.2.1
+## Latest update — Vitrine beta 16 + Pixie Manager v1.3
 
-- Updated Vitrine from beta 13 to beta 14
-- Slightly improved Pixie Manager interface
-- Improved offline device management
-- Improved download stability and audio hooks
+- Updated Vitrine to beta 16
+- Download releases directly from artist profiles, download separately or into a new or existing playlist
 
-Local component tests and the settings simulator passed during development.
-
-The jailbreak DEBs linked above remain the **previous release**. They have not been rebuilt from v1.2.1 sources. See [CHANGELOG.md](CHANGELOG.md).
+The jailbreak DEBs linked above remain the **previous release**. They have not been rebuilt from v1.3 sources. See [CHANGELOG.md](CHANGELOG.md).
 
 ## Source and build
 
