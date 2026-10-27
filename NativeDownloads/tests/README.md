@@ -5,7 +5,7 @@ Run from the project root:
 ```sh
 python3 NativeDownloads/tools/test.py
 python3 NativeDownloads/tools/test.py --suite transport --suite session --suite playlists
-python3 NativeDownloads/tools/test.py --fixture offline_devices_eevee_auth
+python3 NativeDownloads/tools/test.py --fixture offline_devices_vitrine_auth
 python3 NativeDownloads/tools/test.py --list
 ```
 
@@ -42,7 +42,7 @@ recorded in the result. No simulator or iPhone is launched.
   native service; ordering, incremental additions, duplicate URI exclusion,
   artist-scoped stop/cancel and observation cleanup.
 - **devices**: source comparison, reviewed enable/remove operations, malformed
-  HTTP and readback. The extra `offline_devices_eevee_auth` fixture compiles the
+  HTTP and readback. The extra `offline_devices_vitrine_auth` fixture compiles the
   actual Swift `SpriteAuthentication` bridge; its seed contains test-only values.
   Every management HTTP request is intercepted by NSURLProtocol.
 - **diagnostics**: player trace, journal state/reset/off behavior, trace rotation,
@@ -75,7 +75,7 @@ python3 Tests/PlaylistActionRow/test.py --compile-only
 Both commands default to compile-only and produce fresh root `outputs` folders.
 The settings command builds both settings and artist/playlist-picker fixtures
 using the target's full `artist_ui` group. The action-row fixture compiles the
-actual Eevee artist-download bridge and identity adapter; follow state is supplied
+actual Vitrine artist-download bridge and identity adapter; follow state is supplied
 by an explicitly unavailable test provider. It does not prove native Spotify
 follow-provider behavior. Runtime access requires explicit `--run`.
 
