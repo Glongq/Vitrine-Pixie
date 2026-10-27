@@ -1,11 +1,11 @@
 """Execute the production observation trampolines in an ARM64 native fixture."""
 from pathlib import Path
-import struct,subprocess,sys,hashlib
+import struct,subprocess,sys,hashlib,os
 ROOT=Path(__file__).resolve().parents[1]
 sys.path.insert(0,str(ROOT/'tools'))
 import patch_native_trace as trace
 from patch_native_restrictions import layout,branch
-out=ROOT/'build/tests/native-trace';out.mkdir(parents=True,exist_ok=True)
+out=Path(os.environ.get('PIXIE_TEST_BUILD_DIR',ROOT.parent/'outputs/native-trace-test'));out.mkdir(parents=True,exist_ok=True)
 original=out/'original';updated=out/'patched'
 def run(*args):
     result=subprocess.run([str(x) for x in args],capture_output=True,text=True)
@@ -54,7 +54,7 @@ if source.exists():
             try:trace.patch(bad)
             except ValueError:pass
             else:raise AssertionError('Mismatched source/cave accepted')
-    assert (ROOT/'src/NativeTracePatch.h').read_text()==trace.header()
+    assert next((ROOT/'src').rglob('NativeTracePatch.h')).read_text()==trace.header()
     import json
     (out/'verified-native-boundaries.json').write_text(json.dumps({'sha256':hashlib.sha256(final).hexdigest(),'allowed_ranges':allowed,'manifest':manifest,'native_abi_fixture_passed':True},indent=2)+'\n')
     print('PASS exact supplied 9.1.90 guards, dlsym binding, three code boundaries and padding only; repeat/mismatched/occupied patches rejected')

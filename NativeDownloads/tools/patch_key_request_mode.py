@@ -11,17 +11,19 @@ from pathlib import Path
 
 from patch_native_restrictions import UUID, branch, layout
 
-PREFERRED = 0x100000000
-CALL_SITE = 0x103594F60
-WINDOW = 0x103594F54
-ORIGINAL = bytes.fromhex('e4e30191e5c30091e00317aa2200805220013fd6a18301d1')
-PROVIDER = 0x1083DE7B0
-PROVIDER_HEAD = bytes.fromhex('ff0306d1fc6f12a9fa6713a9f85f14a9f65715a9f44f16a9fd7b17a9fdc30591f50305aaf40300aaf70308aa08404239')
-MAPPING = 0x1083DE894
-MAPPING_BYTES = bytes.fromhex('f60301aa5f080071480080520815881a5f0000711c159f1a')
-CAVE = 0x100023D00
-DLSYM_STUB = 0x109B65B68
-DLSYM_STUB_HEAD = bytes.fromhex('70840190106a42f900021fd6')
+from pixie_target import PROFILE, native_address, native_bytes
+
+PREFERRED = int(PROFILE["preferred_address"], 16)
+CALL_SITE = native_address("call_site")
+WINDOW = native_address("window")
+ORIGINAL = native_bytes("window_original")
+PROVIDER = native_address("provider")
+PROVIDER_HEAD = native_bytes("provider_head")
+MAPPING = native_address("mapping")
+MAPPING_BYTES = native_bytes("mapping_original")
+CAVE = native_address("selector_cave")
+DLSYM_STUB = native_address("dlsym_stub")
+DLSYM_STUB_HEAD = native_bytes("dlsym_stub_head")
 SELECTOR_NAME = b'SAPCurrentKeyRequestMode\0'
 ASSEMBLY = Path(__file__).with_name('key_mode_trampoline.S')
 

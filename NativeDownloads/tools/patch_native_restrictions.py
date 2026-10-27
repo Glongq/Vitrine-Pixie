@@ -6,11 +6,13 @@ No runtime code writes, extra imports, polling, key material or episode changes.
 """
 import struct
 
-PREFERRED = 0x100000000
-SETTER = 0x101d1debc
-CAVE = 0x100023f00
-ORIGINAL = bytes.fromhex('e6031eaa8f3ef495fe0306aafd7b11a9')
-UUID = bytes.fromhex('fbce22c17e1b3e0d9be866ff9291943e')
+from pixie_target import PROFILE, native_address, native_bytes
+
+PREFERRED = int(PROFILE["preferred_address"], 16)
+SETTER = native_address("setter")
+CAVE = native_address("setter_cave")
+ORIGINAL = native_bytes("setter_original")
+UUID = bytes.fromhex(PROFILE["uuid"])
 MINIMUM_TRACKS = 1_000_000
 # The setter accepts signed int32 seconds even though its stored field is int64.
 MINIMUM_MUSIC_DURATION_SECONDS = (1 << 31) - 1

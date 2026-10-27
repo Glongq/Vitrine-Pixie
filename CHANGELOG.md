@@ -1,5 +1,11 @@
 # Changelog
 
+## 2026-10-27 — Pixie Manager v1.3
+
+- Refactored Pixie Manager code
+
+Source update only. No IPA or DEB is uploaded with this update.
+
 ## 2026-10-26 — Vitrine beta 16 + Pixie Manager v1.3
 
 - Updated Vitrine to beta 16

@@ -12,3 +12,13 @@ __pycache__/
 NativeDownloads/build/
 NativeDownloads/outputs/
 vitrine/
+
+outputs/
+build/
+.theos/
+legacy/
+NativeDownloads/legacy/
+vitrine-upstream/
+*.o
+*.a
+*.dSYM/

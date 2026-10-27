@@ -12,6 +12,17 @@ static NSInteger maximum=5,freeSlots,failHTTP;
 static BOOL nativeMismatch,ignoreDisable,malformedDevices,allowEnable=YES,enabledPlayback,localUnavailable,changeIdentityAfterEnable;
 static NSUInteger commands,postCount;
 static NSInteger failAfterPost=-1;
+static id vitrineHeaderSnapshot;
+static NSUInteger vitrineProviderCalls;
+__attribute__((visibility("default"))) void SGSpclientHeaders(void (^completion)(NSDictionary *)) {
+    vitrineProviderCalls++;
+#ifdef SAP_VITRINE_AUTH_ASYNC
+    dispatch_async(dispatch_get_main_queue(),^{completion(vitrineHeaderSnapshot);});
+#else
+    completion(vitrineHeaderSnapshot);
+#endif
+}
+
 static NSDictionary *nativeState(void) {
     NSMutableArray *copy=[NSMutableArray array];
     for(NSDictionary *d in devices)[copy addObject:[d copy]];
@@ -116,6 +127,23 @@ static void enable(BOOL success) {
     assert(success?error==nil:error!=nil);
 }
 int main(void) {@autoreleasepool {
+    reset(1);
+    vitrineHeaderSnapshot=@{@"Authorization":@"Bearer TEST_ONLY_NOT_REAL",@"X-Private-Noise":@"do not forward"};
+    vitrineProviderCalls=0;
+    SAPOfflineDevicesTestEnvironment(RegistryProtocol.class,nil);
+    NSDictionary *vitrinePlan=preview(YES);
+    assert(vitrineProviderCalls==1 && requests.count==2);
+    release(vitrinePlan,@[@"old-cache-0"],YES);
+    assert(vitrineProviderCalls==2 && postCount==1 && freeSlots==5);
+    NSData *vitrineAudit=[NSJSONSerialization dataWithJSONObject:events options:0 error:nil];
+    assert(![[[NSString alloc]initWithData:vitrineAudit encoding:NSUTF8StringEncoding]containsString:@"TEST_ONLY_NOT_REAL"]);
+    reset(1);vitrineHeaderSnapshot=@{};
+    SAPOfflineDevicesTestEnvironment(RegistryProtocol.class,nil);
+    preview(NO);assert(requests.count==0 && postCount==0);
+    reset(1);vitrineHeaderSnapshot=@"invalid callback value";
+    SAPOfflineDevicesTestEnvironment(RegistryProtocol.class,nil);
+    preview(NO);assert(requests.count==0 && postCount==0);
+    puts("PASS: real Vitrine exported header provider supports preview and verified disable; empty/malformed headers send no requests or mutations");
     reset(5);NSDictionary *plan=preview(YES);assert([plan[@"active_devices"]count]==5);
     assert([plan[@"active_devices"][0][@"last_seen_at"]longLongValue]==1792520000);
     assert(requests.count==2);

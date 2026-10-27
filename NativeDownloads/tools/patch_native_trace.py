@@ -14,11 +14,33 @@ from patch_native_restrictions import layout,branch,UUID
 from patch_key_request_mode import DLSYM_STUB,_verify_dlsym_binding
 
 SYMBOL=b'SAPTraceNativeBoundary\0'
-POINTS=[
-    ('Request',0x103594f60,0x100023700,bytes.fromhex('02008052'),0),
-    ('Success',0x106231e70,0x100023900,bytes.fromhex('ff4301d1f44f03a9fd7b04a9fd030191'),1),
-    ('Failure',0x100893730,0x100023b00,bytes.fromhex('ff4301d1f44f03a9fd7b04a9fd030191'),2),
-]
+from pixie_target import PROFILE
+POINTS = [(point["name"], int(point["address"], 16), int(point["cave"], 16),
+           bytes.fromhex(point["original"]), point["kind"])
+          for point in PROFILE["trace_points"]]
+
+def text_tail_padding(data):
+    """Return unused file-backed __TEXT space after its final declared section."""
+    cursor=32
+    for _ in range(struct.unpack_from('<I',data,16)[0]):
+        command,length=struct.unpack_from('<II',data,cursor)
+        if command==0x19 and data[cursor+8:cursor+24].split(b'\0')[0]==b'__TEXT':
+            fileoff,filesize=struct.unpack_from('<QQ',data,cursor+40)
+            count=struct.unpack_from('<I',data,cursor+64)[0]
+            if length<72 or 72+count*80>length or fileoff+filesize>len(data):
+                raise ValueError('Invalid executable text section table')
+            section_end=fileoff
+            for index in range(count):
+                section=cursor+72+index*80
+                size=struct.unpack_from('<Q',data,section+40)[0]
+                offset=struct.unpack_from('<I',data,section+48)[0]
+                if offset:
+                    if offset<fileoff or offset+size>fileoff+filesize:
+                        raise ValueError('Text section exceeds its file-backed segment')
+                    section_end=max(section_end,offset+size)
+            return section_end,fileoff+filesize
+        cursor+=length
+    raise ValueError('Executable text segment absent')
 
 @cache
 def template(kind):
@@ -109,16 +131,19 @@ def patch(data):
     if uuid!=UUID:raise ValueError('Unsupported trace executable UUID')
     _verify_dlsym_binding(data);out=bytearray(data);reports=[]
     text=next(s for s in segments if s[0]==b'__TEXT');_,vm,_,fo,size,protection=text
+    tail_start,tail_end=text_tail_padding(data)
     def off(address,length):
         if not vm<=address or address+length>vm+size:raise ValueError('Trace outside executable text')
         return fo+address-vm
     for point in POINTS:
         name,address,cave,expected,kind=point;code=trampoline(point);target=off(cave,len(code));source=off(address,len(expected))
-        if protection&5!=5 or target<end or target+len(code)>first or any(data[target:target+len(code)]):raise ValueError('Trace padding is occupied or unavailable')
+        header_padding=end<=target and target+len(code)<=first
+        tail_padding=tail_start<=target and target+len(code)<=tail_end
+        if protection&5!=5 or not (header_padding or tail_padding) or any(data[target:target+len(code)]):raise ValueError('Trace padding is occupied or unavailable')
         if data[source:source+len(expected)]!=expected:raise ValueError(f'Trace {name} prologue differs')
         if kind==0 and data[source+4:source+8]!=bytes.fromhex('20013fd6'):raise ValueError('Native key call target instruction differs')
         out[target:target+len(code)]=code;struct.pack_into('<I',out,source,branch(address,cave))
-        reports.append({'boundary':name,'address':hex(address),'cave':hex(cave),'bytes':len(code),'preserves_native_callback_ownership':True})
+        reports.append({'boundary':name,'address':hex(address),'cave':hex(cave),'bytes':len(code),'padding':'text_header' if header_padding else 'text_tail_after_last_section','preserves_native_callback_ownership':True})
     return bytes(out),{'uuid':UUID.hex(),'fixed_request_mode':0,'helper':SYMBOL[:-1].decode(),'boundaries':reports,'key_material_read':False}
 
 def header():

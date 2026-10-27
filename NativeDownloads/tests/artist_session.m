@@ -41,6 +41,8 @@ static NSDictionary *release(int n){return @{ @"uri":uri(n),@"name":@"Fixture" }
 BOOL SAPIsAlbumURI(NSString *u){return [u hasPrefix:@"spotify:album:"] && u.length==36;}
 BOOL SAPIsPlaylistURI(NSString *u){return [u hasPrefix:@"spotify:playlist:"] && u.length==39;}
 NSArray *SAPParseArtistAlbumTrackURIs(NSData *data,NSString *uri,NSString **reason){NSUInteger count=[verifiedFixtureTrackCounts[uri]unsignedIntegerValue];if(!count || ![[[NSString alloc]initWithData:data encoding:NSUTF8StringEncoding]isEqual:uri])return nil;NSMutableArray *tracks=[NSMutableArray array];for(NSUInteger i=0;i<count;i++)[tracks addObject:[NSString stringWithFormat:@"spotify:track:%022lu",(unsigned long)i+1]];return tracks;}
+bool SAPDiagnosticsEnabled(void){return true;}
+
 void SAPJournalNoteAction(NSString *event,NSDictionary *facts){if([event hasPrefix:@"artist_observation_"] || [event hasPrefix:@"artist_native_reregistration_"])[repairJournal addObject:@{@"event":event,@"facts":facts?:@{}}];}
 void SAPPrepareNativeOffline(BOOL(^wanted)(void),void(^done)(BOOL,NSString*)){
     if(holdPrepare){[heldPreparations addObject:[done copy]];return;}

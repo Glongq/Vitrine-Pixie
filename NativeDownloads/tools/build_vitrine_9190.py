@@ -16,17 +16,9 @@ from patch_native_trace import patch as patch_native_trace,header as native_trac
 from fix_sideload_dependencies import pin_substrate_dependency, SUBSTRATE
 from signing_metadata import sign_preserving_entitlements
 
-ROOT = Path(__file__).resolve().parents[1]
-UUID = bytes.fromhex("fbce22c17e1b3e0d9be866ff9291943e")
-SOURCE_FILES = [
-    "AudioProbe.c", "Diagnostics.m", "Localization.m",
-    "AVAudioHooks.m", "SourceGraph.c", "OfflineFlags.m", "WireProto.m",
-    "OfflineConfig.m", "TrackJournal.m", "NativeErrorLog.m", "PlayerTrace.m",
-    "NativeOffline.m", "NativeAlbumCommand.m", "TrackDownload.m", "AudioProbeUI.m", "DownloadSettingsUI.m",
-    "EncodedAudio.m", "AlbumMetadata.m", "ArtistMetadata.m", "ArtistDownloadQueue.m", "ArtistDownloadSession.m", "ArtistDownloadsUI.m", "PlaylistDownloads.m",
-    "SupportLog.m", "DownloadCompatibility.m", "OfflineDevices.m",
-    "DiagnosticTrace.m", "TracePlatform.m", "NativeKeyTrace.m",
-]
+from pixie_target import PROFILE, ROOT, resolve_source, companion_sources, include_directories
+UUID = bytes.fromhex(PROFILE["uuid"])
+SOURCE_FILES = [str(path.relative_to(ROOT / "src")) for path in companion_sources()]
 
 
 def run(*command):
@@ -53,13 +45,13 @@ def main():
             raise RuntimeError("The rebuilt Vitrine lacks the album action row")
     if not source.is_file():
         parser.error("Input IPA not found")
-    if (ROOT / "src/NativeRestrictionsPatch.h").read_text() != guard_header():
+    if resolve_source("NativeRestrictionsPatch.h").read_text() != guard_header():
         raise RuntimeError("Native restriction header is out of sync")
-    if (ROOT / "src/OfflineLimits.h").read_text() != limits_header():
+    if resolve_source("OfflineLimits.h").read_text() != limits_header():
         raise RuntimeError("Offline limits header is out of sync")
-    if (ROOT / "src/NativeKeyModePatch.h").read_text() != key_header():
+    if resolve_source("NativeKeyModePatch.h").read_text() != key_header():
         raise RuntimeError("Native key-mode header is out of sync")
-    if (ROOT / "src/NativeTracePatch.h").read_text() != native_trace_header():
+    if resolve_source("NativeTracePatch.h").read_text() != native_trace_header():
         raise RuntimeError("Native trace header is out of sync")
 
     with ZipFile(source) as archive:
@@ -100,8 +92,8 @@ def main():
         run("xcrun", "clang", "-dynamiclib", "-arch", "arm64", "-target", "arm64-apple-ios15.0",
             "-isysroot", sdk, "-fobjc-arc", "-std=gnu11", "-O2", "-fvisibility=hidden",
             "-Wall", "-Wextra", "-Wno-unused-parameter", "-Wno-nullability-completeness",
-            "-Werror=implicit-function-declaration", "-I" + str(ROOT / "src"),
-            *(ROOT / "src" / name for name in SOURCE_FILES),
+            "-Werror=implicit-function-declaration", *("-I" + str(path) for path in include_directories()),
+            *companion_sources(),
             "-framework", "AudioToolbox", "-framework", "Foundation", "-framework", "UIKit",
             "-framework", "AVFAudio", "-framework", "CoreGraphics", "-framework", "AVFoundation",
             "-framework", "CoreMedia", "-framework", "Network", "-framework", "ImageIO", "-framework", "QuartzCore", "-Wl,-install_name,@rpath/SpotifyAudioProbe.dylib", "-o", companion)

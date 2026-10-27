@@ -42,16 +42,15 @@ Native downloads and album controls were checked on an iPhone 15 Pro Max, iOS 27
 
 ## Latest update — Vitrine beta 16 + Pixie Manager v1.3
 
-- Updated Vitrine to beta 16
-- Download releases directly from artist profiles, download separately or into a new or existing playlist
+- Refactored Pixie Manager code
 
-The jailbreak DEBs linked above remain the **previous release**. They have not been rebuilt from v1.3 sources. See [CHANGELOG.md](CHANGELOG.md).
+The jailbreak DEBs linked above remain the **previous release**. They have not been rebuilt from these sources. See [CHANGELOG.md](CHANGELOG.md).
 
 ## Source and build
 
 This is a compact source overlay: Pixie sources plus the changes to Vitrine, rather than a copy of its entire repository or Git history.
 
-See [BUILD.md](BUILD.md) for the pinned upstream revision, patch application and build commands. [SOURCE.md](SOURCE.md) records authorship, scope and source hashes.
+See [BUILD.md](BUILD.md) for the pinned upstream revision, patch application and build commands. The [integration map](NativeDownloads/docs/INTEGRATION-MAP.md) describes the module layout. [SOURCE.md](SOURCE.md) records authorship, scope and source hashes.
 
 ## Credits
 
