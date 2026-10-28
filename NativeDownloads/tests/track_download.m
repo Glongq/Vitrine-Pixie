@@ -4,6 +4,7 @@
 #import "WireProto.h"
 #import "NativeOffline.h"
 #import "TrackJournal.h"
+#import <objc/runtime.h>
 #include <assert.h>
 static BOOL prepareReady=YES,prepareDeferred;
 static void (^pendingPreparation)(BOOL,NSString *);
@@ -35,6 +36,8 @@ void SAPJournalObserveCall(NSString *method, NSData *request, NSData *response, 
 void SAPJournalSetCaller(SAPJournalCaller caller) { journalCaller = [caller copy]; }
 BOOL SAPJournalOnOwnQueue(void) { return NO; }
 static NSDictionary *nativeFailureForTesting;
+static NSCondition *readOnlyGate;
+static BOOL readOnlyGateEntered, readOnlyGateRelease;
 NSDictionary *SAPJournalNativeErrorForURI(NSString *uri) {return [nativeFailureForTesting[@"uri"] isEqual:uri]?nativeFailureForTesting:nil;}
 void SAPJournalRefresh(NSString *reason) { journalRefreshes++; }
 void SAPJournalNoteCallIssue(NSString *method,NSString *uri,NSString *channel,NSString *issue) {}
@@ -68,21 +71,31 @@ static unsigned journalSaw(NSString *method) {
 @end
 @interface FakeLifetime : NSObject
 @property(nonatomic) BOOL cancelled, acquired;
+@property(nonatomic, copy) dispatch_block_t onCancel;
 - (void)cancel;
 - (void)acquire;
 @end
 @implementation FakeLifetime
-- (void)cancel { assert(self.acquired); self.cancelled = YES; }
+- (void)cancel { assert(self.acquired); if(self.cancelled)return;self.cancelled = YES;if(self.onCancel)self.onCancel(); }
 - (void)acquire { self.acquired = YES; }
 @end
 @interface SPTEsperantoTransportBridgeImpl : NSObject
 @property(nonatomic) unsigned scenario, queries, requests, removes;
 @property(nonatomic) unsigned commandBehavior, commandCount;
+@property(nonatomic) unsigned playlistBehavior, playlistCount;
+@property(nonatomic,copy) void (^playlistLateCallback)(NSData *);
+@property(nonatomic) unsigned collectionBehavior, collectionCount;
+@property(nonatomic,copy) void (^collectionLateCallback)(NSData *);
 @property(nonatomic,copy) void (^commandLateCallback)(NSData *);
+@property(nonatomic) unsigned readOnlyBehavior, readOnlyCount;
+@property(nonatomic,copy) void (^readOnlyLateCallback)(NSData *);
+@property(nonatomic,strong) FakeLifetime *readOnlyLifetime;
 @property(nonatomic, copy) NSString *requested;
 @property(nonatomic, copy) void (^lateCallback)(NSData *);
 @property(nonatomic, copy) BOOL (^errorCallback)(NSData *);
 @property(nonatomic, strong) FakeLifetime *streamLifetime;
+@property(nonatomic) unsigned contextStreamCount, contextStreamBehavior,itemStreamCount,itemReadCount;
+@property(nonatomic, copy) BOOL (^contextStreamCallback)(NSData *);
 - (id)callSingle:(NSString *)service method:(NSString *)method payload:(NSData *)payload onResponse:(void (^)(NSData *))callback;
 - (id)callStream:(NSString *)service method:(NSString *)method payload:(NSData *)payload onResponse:(BOOL (^)(NSData *))callback;
 @end
@@ -90,17 +103,71 @@ static NSString *const trackURI = @"spotify:track:1234567890123456789012";
 static NSData *join(NSData *a, NSData *b) { NSMutableData *d = [a mutableCopy]; [d appendData:b]; return d; }
 @implementation SPTEsperantoTransportBridgeImpl
 - (id)callStream:(NSString *)service method:(NSString *)method payload:(NSData *)payload onResponse:(BOOL (^)(NSData *))callback {
-    assert([service isEqual:@"spotify.offline_esperanto.proto.Offline"] && [method isEqual:@"SubscribeError"] && payload.length == 0);
-    self.errorCallback = callback; self.streamLifetime = [FakeLifetime new]; return self.streamLifetime;
+    assert([service isEqual:@"spotify.offline_esperanto.proto.Offline"]);
+    if([method isEqual:@"SubscribeItems"]){assert(payload.length==38 && ((uint8_t *)payload.bytes)[0]==0x0a);self.itemStreamCount++;self.streamLifetime=[FakeLifetime new];self.contextStreamCallback=callback;callback(SAPProtoBytes(1,join(SAPProtoBytes(1,[trackURI dataUsingEncoding:NSUTF8StringEncoding]),SAPProtoInteger(2,3))));return self.streamLifetime;}
+    assert(payload.length==0);
+    self.streamLifetime = [FakeLifetime new];
+    if ([method isEqual:@"SubscribeError"]) { self.errorCallback = callback; return self.streamLifetime; }
+    assert([method isEqual:@"SubscribeContexts"] || [method isEqual:@"SubscribeContextsProgress"]);
+    self.contextStreamCount++; self.contextStreamCallback = callback;
+    if (self.contextStreamBehavior == 1) {
+        callback([NSData dataWithBytes:(uint8_t[]){0x08,0x01} length:2]);
+        callback([NSData dataWithBytes:(uint8_t[]){0x08,0x02} length:2]);
+    }
+    return self.streamLifetime;
 }
 - (id)callSingle:(NSString *)service method:(NSString *)method payload:(NSData *)payload onResponse:(void (^)(NSData *))callback {
     if ([method isEqual:@"warmup"]) return nil;
     if (self.scenario == 12) return nil; // Wrong/stale native channel: never answers.
+    if([service isEqual:@"spotify.playlist_esperanto.proto.PlaylistService"]) {
+        assert([method isEqual:@"SetOfflineState"]);
+        assert([SAPProtoString(SAPProtoFields(payload),1)isEqual:@"spotify:playlist:1234567890123456789012"]);
+        assert(SAPProtoNumber(SAPProtoFields(payload),3,0)==1);
+        self.playlistCount++;
+        if(self.playlistBehavior==1)self.playlistLateCallback=callback;
+        else if(self.playlistBehavior==2)callback(nil);
+        else if(self.playlistBehavior==3)@throw [NSException exceptionWithName:@"TestInvocationException" reason:nil userInfo:nil];
+        else callback(NSData.data);
+        return [FakeLifetime new];
+    }
+    if([method isEqual:@"GetContexts"]) {
+        assert([service isEqual:@"spotify.offline_esperanto.proto.Offline"]);
+        self.readOnlyCount++;self.readOnlyLifetime=[FakeLifetime new];
+        if(self.readOnlyBehavior==1)self.readOnlyLateCallback=callback;
+        else if(self.readOnlyBehavior==3)callback(nil);
+        else {
+            if(self.readOnlyBehavior==2) {
+                [readOnlyGate lock];readOnlyGateEntered=YES;[readOnlyGate broadcast];
+                while(!readOnlyGateRelease)[readOnlyGate wait];
+                [readOnlyGate unlock];
+            }
+            callback(NSData.data);
+        }
+        return self.readOnlyLifetime;
+    }
+    if([service isEqual:@"spotify.collection_esperanto.proto.CollectionService"]) {
+        assert([method isEqual:@"Add"]);
+        // Independent exact 40-byte native album-button payload from log 22:
+        // items(field2) -> item.uri(field1) -> 36 UTF-8 album URI bytes.
+        const uint8_t *bytes=payload.bytes;assert(payload.length==40 && bytes[0]==0x12 && bytes[1]==0x26 && bytes[2]==0x0a && bytes[3]==0x24);
+        assert(!memcmp(bytes+4,"spotify:album:1234567890123456789012",36));
+        self.collectionCount++;
+        if(self.collectionBehavior==1)self.collectionLateCallback=callback;
+        else if(self.collectionBehavior==2)callback(nil);
+        else callback([NSData dataWithBytes:(uint8_t[]){0x0a,0x03,0x08,0xc8,0x01} length:5]);
+        return [FakeLifetime new];
+    }
     assert([service isEqual:@"spotify.offline_esperanto.proto.Offline"]);
+    if([method isEqual:@"RemoveDownload"] && payload.length==38 && !memcmp((uint8_t *)payload.bytes+2,"spotify:album:",14)) {
+        assert(((uint8_t*)payload.bytes)[0]==0x12 && ((uint8_t*)payload.bytes)[1]==0x24);
+        assert(!memcmp((uint8_t*)payload.bytes+2,"spotify:album:1234567890123456789012",36));
+        self.removes++;callback(NSData.data);return [FakeLifetime new];
+    }
     if([method isEqual:@"SetOfflinePlaybackAllowed"]) {
         self.commandCount++;assert([payload isEqual:SAPProtoInteger(1,1)]);
         if(self.commandBehavior==1)self.commandLateCallback=callback;
         else if(self.commandBehavior==2)callback(nil);
+        else if(self.commandBehavior==3)@throw [NSException exceptionWithName:@"TestInvocationException" reason:nil userInfo:nil];
         else callback(SAPProtoInteger(1,1));
         return [FakeLifetime new];
     }
@@ -121,6 +188,7 @@ static NSData *join(NSData *a, NSData *b) { NSMutableData *d = [a mutableCopy]; 
             else callback(NSData.data); // Valid protobuf default error=0.
         }
     } else if ([method isEqual:@"GetItems"]) {
+        self.itemReadCount++;
         assert(payload.length == 38 && ((uint8_t *)payload.bytes)[0] == 0x0a && ((uint8_t *)payload.bytes)[1] == 0x24);
         assert(memcmp((uint8_t *)payload.bytes + 2, trackURI.UTF8String, 36) == 0);
         unsigned status = self.scenario == 3 ? 3 : self.scenario >= 14 ? 1 : 0;
@@ -169,10 +237,21 @@ static void reset(SPTEsperantoTransportBridgeImpl *t, unsigned scenario) {
     t.scenario = scenario; t.queries = 0; t.requested = nil; t.errorCallback = nil;
 }
 int main(void) { @autoreleasepool {
+    readOnlyGate=[NSCondition new];
     SAPDiagnosticsSetEnabled(true);
 
     SAPInstallTrackDownloader(); SAPInstallTrackDownloader();
     assert([SAPTrackDownloadReport()[@"installed_hooks"] count] == 7);
+    // A valid mutation with no verified endpoint is definitely not invoked.
+    __block unsigned unsentReplies=0;
+    void (^unsent)(NSData *,NSString *,SAPCommandInvocationDisposition)=^(NSData *data,NSString *error,SAPCommandInvocationDisposition disposition){
+        assert(NSThread.isMainThread && !data && [error isEqual:@"No verified Spotify transport. Refresh the device state first."]);
+        assert(disposition==SAPCommandNotInvoked);unsentReplies++;
+    };
+    SAPCallOfflineCommandOnceWithDisposition(@"AddDownload",SAPProtoBytes(2,[@"spotify:album:1234567890123456789012" dataUsingEncoding:NSUTF8StringEncoding]),unsent);
+    SAPSetPlaylistOfflineOnceWithDisposition(@"spotify:playlist:1234567890123456789012",YES,unsent);
+    waitFor(^BOOL{return unsentReplies==2;});
+    puts("PASS: album and playlist mutations with no verified endpoint report NotInvoked on main");
     SPTEsperantoPlayer *player = [SPTEsperantoPlayer new];
     FakeTrack *track = [FakeTrack new]; track.URI = [NSURL URLWithString:trackURI]; track.trackTitle = @"Original track";
     FakeState *state = [FakeState new]; state.track = track; player.state = state;
@@ -326,6 +405,174 @@ int main(void) { @autoreleasepool {
     // Unlike read-only requests, explicit mutations must never fall back to a
     // second transport, including after a timeout or invalid response.
     reset(t,0);
+    // Hold the worker inside one transport call, enqueue a second request,
+    // cancel it before its worker turn, then release the first request. The
+    // canceled request must never reach callSingle.
+    readOnlyGateEntered=NO;readOnlyGateRelease=NO;t.readOnlyBehavior=2;
+    unsigned beforeReadOnly=t.readOnlyCount;__block unsigned blockerReplies=0;
+    dispatch_block_t blockerCancel=SAPCallReadOnlyServiceCancellable(
+        @"spotify.offline_esperanto.proto.Offline",@"GetContexts",NSData.data,
+        ^(NSData *d,NSString *e){assert(d && !e);blockerReplies++;});
+    waitFor(^BOOL{[readOnlyGate lock];BOOL entered=readOnlyGateEntered;[readOnlyGate unlock];return entered;});
+    __block unsigned canceledReplies=0;
+    dispatch_block_t cancelBeforeSend=SAPCallReadOnlyServiceCancellable(
+        @"spotify.offline_esperanto.proto.Offline",@"GetContexts",NSData.data,
+        ^(NSData *d,NSString *e){canceledReplies++;});
+    cancelBeforeSend();cancelBeforeSend();
+    [readOnlyGate lock];readOnlyGateRelease=YES;[readOnlyGate broadcast];[readOnlyGate unlock];
+    waitFor(^BOOL{return blockerReplies==1;});
+    assert(t.readOnlyCount==beforeReadOnly+1 && canceledReplies==0);
+    blockerCancel=nil;cancelBeforeSend=nil;t.readOnlyBehavior=0;
+    puts("PASS: cancellable read-only request canceled before send is skipped on worker");
+
+    // A sent but unanswered read owns an acquired lifetime. Cancellation
+    // releases it, suppresses completion, and makes a late native reply inert.
+    t.readOnlyBehavior=1;beforeReadOnly=t.readOnlyCount;__block unsigned lateReplies=0;
+    dispatch_block_t cancelActive=SAPCallReadOnlyServiceCancellable(
+        @"spotify.offline_esperanto.proto.Offline",@"GetContexts",NSData.data,
+        ^(NSData *d,NSString *e){lateReplies++;});
+    waitFor(^BOOL{return t.readOnlyCount==beforeReadOnly+1 && t.readOnlyLifetime.acquired;});
+    FakeLifetime *canceledReadLifetime=t.readOnlyLifetime;cancelActive();
+    waitFor(^BOOL{return canceledReadLifetime.cancelled;});
+    assert(t.readOnlyLateCallback!=nil && lateReplies==0);
+    t.readOnlyLateCallback(NSData.data);
+    until=[NSDate dateWithTimeIntervalSinceNow:0.08];
+    while(until.timeIntervalSinceNow>0)[NSRunLoop.mainRunLoop runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.002]];
+    assert(lateReplies==0 && t.readOnlyCount==beforeReadOnly+1 && canceledReadLifetime.cancelled);
+    cancelActive=nil;t.readOnlyBehavior=0;
+    puts("PASS: active read cancellation cancels acquired lifetime and ignores late reply");
+
+    // Streams are pinned to the verified Offline transport and stay open after
+    // the first event. The initial-response deadline must not become idle polling.
+    t.contextStreamBehavior=1;unsigned beforeStreams=t.contextStreamCount;
+    NSMutableArray *streamEvents=[NSMutableArray array];__block unsigned streamErrors=0;
+    dispatch_block_t cancelStream=SAPSubscribeReadOnlyService(
+        @"spotify.offline_esperanto.proto.Offline",@"SubscribeContexts",NSData.data,
+        ^(NSData *data,NSString *error){if(error)streamErrors++;else [streamEvents addObject:data];});
+    waitFor(^BOOL{return streamEvents.count==2;});
+    FakeLifetime *activeStreamLifetime=t.streamLifetime;
+    assert(t.contextStreamCount==beforeStreams+1 && activeStreamLifetime.acquired && !activeStreamLifetime.cancelled);
+    until=[NSDate dateWithTimeIntervalSinceNow:0.2];
+    while(until.timeIntervalSinceNow>0)[NSRunLoop.mainRunLoop runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.002]];
+    assert(streamEvents.count==2 && streamErrors==0 && !activeStreamLifetime.cancelled);
+    BOOL (^lateStreamEvent)(NSData *)=t.contextStreamCallback;
+    cancelStream();cancelStream();waitFor(^BOOL{return activeStreamLifetime.cancelled;});
+    lateStreamEvent(NSData.data);
+    until=[NSDate dateWithTimeIntervalSinceNow:0.04];
+    while(until.timeIntervalSinceNow>0)[NSRunLoop.mainRunLoop runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.002]];
+    assert(streamEvents.count==2 && streamErrors==0 && t.contextStreamCount==beforeStreams+1);
+    cancelStream=nil;t.contextStreamBehavior=0;
+    puts("PASS: stream delivers multiple events, disarms its first-response deadline, and explicit cancellation suppresses late events");
+
+    // Queue a stream behind a blocked worker and cancel it before dispatch.
+    readOnlyGateEntered=NO;readOnlyGateRelease=NO;t.readOnlyBehavior=2;
+    beforeReadOnly=t.readOnlyCount;beforeStreams=t.contextStreamCount;blockerReplies=0;
+    blockerCancel=SAPCallReadOnlyServiceCancellable(
+        @"spotify.offline_esperanto.proto.Offline",@"GetContexts",NSData.data,
+        ^(NSData *d,NSString *e){assert(d&&!e);blockerReplies++;});
+    waitFor(^BOOL{[readOnlyGate lock];BOOL entered=readOnlyGateEntered;[readOnlyGate unlock];return entered;});
+    __block unsigned canceledStreamReplies=0;
+    dispatch_block_t cancelQueuedStream=SAPSubscribeReadOnlyService(
+        @"spotify.offline_esperanto.proto.Offline",@"SubscribeContextsProgress",NSData.data,
+        ^(NSData *d,NSString *e){canceledStreamReplies++;});
+    cancelQueuedStream();
+    [readOnlyGate lock];readOnlyGateRelease=YES;[readOnlyGate broadcast];[readOnlyGate unlock];
+    waitFor(^BOOL{return blockerReplies==1;});
+    until=[NSDate dateWithTimeIntervalSinceNow:0.04];
+    while(until.timeIntervalSinceNow>0)[NSRunLoop.mainRunLoop runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.002]];
+    assert(t.readOnlyCount==beforeReadOnly+1 && t.contextStreamCount==beforeStreams && canceledStreamReplies==0);
+    blockerCancel=nil;cancelQueuedStream=nil;t.readOnlyBehavior=0;
+    puts("PASS: stream canceled before its worker turn never calls the transport");
+
+    // An unanswered active stream times out once, releases its lifetime, and
+    // ignores a native callback delivered after cleanup.
+    __block unsigned timeoutErrors=0,timeoutEvents=0;beforeStreams=t.contextStreamCount;
+    dispatch_block_t timeoutStream=SAPSubscribeReadOnlyService(
+        @"spotify.offline_esperanto.proto.Offline",@"SubscribeContexts",NSData.data,
+        ^(NSData *d,NSString *e){if(e)timeoutErrors++;else timeoutEvents++;});
+    waitFor(^BOOL{return t.contextStreamCount==beforeStreams+1 && t.streamLifetime.acquired;});
+    FakeLifetime *timedOutStreamLifetime=t.streamLifetime;BOOL (^lateTimeoutEvent)(NSData *)=t.contextStreamCallback;
+    waitFor(^BOOL{return timeoutErrors==1 && timedOutStreamLifetime.cancelled;});
+    lateTimeoutEvent(NSData.data);
+    until=[NSDate dateWithTimeIntervalSinceNow:0.2];
+    while(until.timeIntervalSinceNow>0)[NSRunLoop.mainRunLoop runUntilDate:[NSDate dateWithTimeIntervalSinceNow:0.002]];
+    assert(timeoutErrors==1 && timeoutEvents==0 && timedOutStreamLifetime.cancelled);
+    timeoutStream();timeoutStream=nil;
+    __block BOOL rejectedStream=NO;beforeStreams=t.contextStreamCount;
+    SAPSubscribeReadOnlyService(@"spotify.offline_esperanto.proto.Offline",@"AddDownload",NSData.data,
+        ^(NSData *d,NSString *e){assert(!d&&e.length);rejectedStream=YES;});
+    waitFor(^BOOL{return rejectedStream;});assert(t.contextStreamCount==beforeStreams);
+    puts("PASS: first-response timeout reports one error and unsupported mutating stream names are rejected before send");
+
+    // Native endpoint discovery is weak. During renewal, the old stream is
+    // deliberately its endpoint's only owner until the replacement is healthy.
+    __weak SPTEsperantoTransportBridgeImpl *leasedEndpoint;
+    __block unsigned leaseEvents=0,leaseErrors=0;
+    __block dispatch_block_t cancelOldLease=nil,cancelNewLease=nil;
+    @autoreleasepool {
+        SPTEsperantoTransportBridgeImpl *ephemeral=[SPTEsperantoTransportBridgeImpl new];
+        ephemeral.contextStreamBehavior=1;leasedEndpoint=ephemeral;
+        [ephemeral callSingle:@"spotify.offline_esperanto.proto.Offline" method:@"GetContexts"
+            payload:NSData.data onResponse:^(NSData *data){assert(data);}];
+        cancelOldLease=SAPSubscribeReadOnlyService(@"spotify.offline_esperanto.proto.Offline",@"SubscribeContexts",NSData.data,
+            ^(NSData *data,NSString *error){if(error)leaseErrors++;else leaseEvents++;});
+        waitFor(^BOOL{return leaseEvents==2;});
+    }
+    assert(leasedEndpoint && leasedEndpoint.streamLifetime.acquired);
+    FakeLifetime *oldLeaseLifetime=leasedEndpoint.streamLifetime;
+    oldLeaseLifetime.onCancel=^{assert(leasedEndpoint && leasedEndpoint.streamLifetime.acquired && !leasedEndpoint.streamLifetime.cancelled);};
+    cancelNewLease=SAPSubscribeReadOnlyService(@"spotify.offline_esperanto.proto.Offline",@"SubscribeContextsProgress",NSData.data,
+        ^(NSData *data,NSString *error){if(error)leaseErrors++;else leaseEvents++;});
+    cancelOldLease();waitFor(^BOOL{return oldLeaseLifetime.cancelled && leaseEvents==4;});cancelOldLease=nil;
+    FakeLifetime *newLeaseLifetime=leasedEndpoint.streamLifetime;
+    assert(newLeaseLifetime!=oldLeaseLifetime && newLeaseLifetime.acquired && oldLeaseLifetime.cancelled);
+    assert(leasedEndpoint && !newLeaseLifetime.cancelled && leaseErrors==0);
+    cancelNewLease();waitFor(^BOOL{return newLeaseLifetime.cancelled;});cancelNewLease=nil;
+    waitFor(^BOOL{return leasedEndpoint==nil;});
+    oldLeaseLifetime.onCancel=nil;oldLeaseLifetime=nil;newLeaseLifetime=nil;
+    puts("PASS: replacement stream acquires before the old lease cancels; an endpoint owned only by streams is released after every cancellation");
+
+    // Item streams use the exact item request for discovery, never a context probe.
+    unsigned itemReadsBefore=t.itemReadCount,itemStreamsBefore=t.itemStreamCount,contextReadsBefore=t.readOnlyCount,addsBeforeItems=t.requests;
+    __block unsigned itemEvents=0,itemErrors=0;
+    dispatch_block_t cancelItems=SAPSubscribeReadOnlyService(@"spotify.offline_esperanto.proto.Offline",@"SubscribeItems",SAPProtoBytes(1,[trackURI dataUsingEncoding:NSUTF8StringEncoding]),^(NSData *data,NSString *error){if(error)itemErrors++;else {assert([SAPProtoString(SAPProtoFields(SAPProtoData(SAPProtoFields(data),1)),1)isEqual:trackURI]);itemEvents++;}});
+    waitFor(^BOOL{return itemEvents==1||itemErrors>0;});
+    assert(itemEvents==1&&itemErrors==0&&t.itemReadCount==itemReadsBefore+1&&t.itemStreamCount==itemStreamsBefore+1&&t.readOnlyCount==contextReadsBefore&&t.requests==addsBeforeItems);
+    FakeLifetime *itemLifetime=t.streamLifetime;BOOL (^lateItem)(NSData *)=t.contextStreamCallback;
+    assert(itemLifetime.acquired&&!itemLifetime.cancelled);cancelItems();waitFor(^BOOL{return itemLifetime.cancelled;});cancelItems=nil;lateItem(NSData.data);
+    until=[NSDate dateWithTimeIntervalSinceNow:.08];while(until.timeIntervalSinceNow>0)[NSRunLoop.mainRunLoop runUntilDate:[NSDate dateWithTimeIntervalSinceNow:.002]];assert(itemEvents==1&&itemErrors==0);
+    puts("PASS: SubscribeItems probes exact GetItems once, acquires/cancels its native lifetime, ignores late events, and sends no mutations or context queries");
+
+    // Retire the item proof as well before testing context-route discovery independently.
+    @autoreleasepool {SPTEsperantoTransportBridgeImpl *temporaryProof=[SPTEsperantoTransportBridgeImpl new];[temporaryProof callSingle:@"spotify.offline_esperanto.proto.Offline" method:@"GetContexts" payload:NSData.data onResponse:^(NSData *data){assert(data);}];}
+    // Once that last proof disappears, a replacement may establish fresh
+    // evidence with a bounded read-only probe of a discovered native endpoint.
+    t.contextStreamBehavior=1;unsigned recoveryReads=t.readOnlyCount,recoveryAdds=t.requests;
+    __block unsigned recoveredEvents=0,recoveredErrors=0;
+    dispatch_block_t recoveredStream=SAPSubscribeReadOnlyService(@"spotify.offline_esperanto.proto.Offline",@"SubscribeContexts",NSData.data,
+        ^(NSData *data,NSString *error){if(error)recoveredErrors++;else recoveredEvents++;});
+    waitFor(^BOOL{return recoveredEvents==2 || recoveredErrors>0;});
+    assert(recoveredEvents==2 && recoveredErrors==0 && t.readOnlyCount==recoveryReads+1 && t.requests==recoveryAdds);
+    FakeLifetime *recoveredLifetime=t.streamLifetime;recoveredStream();waitFor(^BOOL{return recoveredLifetime.cancelled;});recoveredStream=nil;t.contextStreamBehavior=0;
+    puts("PASS: a lost weak proof recovers through one bounded native read-only probe and starts a healthy stream without replaying AddDownload");
+
+    // Invalid replies and unanswered reads may try each available candidate
+    // once. Completion and late callbacks cannot start an unbounded retry loop.
+    t.readOnlyBehavior=1;cosmos.readOnlyBehavior=3;
+    unsigned fallbackReads=t.readOnlyCount,invalidReads=cosmos.readOnlyCount;
+    __block unsigned fallbackErrors=0;
+    [t callSingle:@"spotify.offline_esperanto.proto.Offline" method:@"GetOfflinePlaybackStatus" payload:NSData.data onResponse:^(NSData *data){}];
+    dispatch_block_t cancelFallback=SAPCallReadOnlyServiceCancellable(@"spotify.offline_esperanto.proto.Offline",@"GetContexts",NSData.data,
+        ^(NSData *data,NSString *error){assert(!data && [error isEqual:@"Spotify did not answer the request"]);fallbackErrors++;});
+    waitFor(^BOOL{return fallbackErrors==1;});
+    assert(t.readOnlyCount==fallbackReads+1 && cosmos.readOnlyCount==invalidReads+1);
+    void(^lateFallback)(NSData *)=t.readOnlyLateCallback;lateFallback(NSData.data);
+    until=[NSDate dateWithTimeIntervalSinceNow:.2];
+    while(until.timeIntervalSinceNow>0)[NSRunLoop.mainRunLoop runUntilDate:[NSDate dateWithTimeIntervalSinceNow:.002]];
+    assert(fallbackErrors==1 && t.readOnlyCount==fallbackReads+1 && cosmos.readOnlyCount==invalidReads+1);
+    cancelFallback();cancelFallback=nil;t.readOnlyBehavior=0;cosmos.readOnlyBehavior=0;
+    puts("PASS: timeout and invalid read responses exhaust a finite fallback list once, report the exact error, and ignore late replies without mutation replay");
+
     __block BOOL answered=NO;
     SAPCallReadOnlyService(@"spotify.offline_esperanto.proto.Offline",@"GetOfflinePlaybackStatus",NSData.data,^(NSData *d,NSString *e){assert(d && !e);answered=YES;});
     waitFor(^BOOL{return answered;});
@@ -345,5 +592,85 @@ int main(void) { @autoreleasepool {
     SAPCallOfflineCommandOnce(@"UnknownMutation",NSData.data,^(NSData *d,NSString *e){assert(!d && e);answered=YES;});
     waitFor(^BOOL{return answered;});assert(t.commandCount==before);
     puts("PASS: explicit enable uses one proven endpoint once; timeout/invalid/late replies never replay it; unknown mutations are rejected");
+    // Invocation is separate from an ACK: even a native exception, missing
+    // reply or nil reply leaves the mutation ambiguous and cannot permit replay.
+    for(unsigned kind=0;kind<2;kind++)for(unsigned behavior=0;behavior<4;behavior++) {
+        t.commandBehavior=behavior;t.playlistBehavior=behavior;
+        unsigned previous=kind?t.playlistCount:t.commandCount;__block unsigned completions=0;
+        void (^result)(NSData *,NSString *,SAPCommandInvocationDisposition)=^(NSData *data,NSString *error,SAPCommandInvocationDisposition disposition){
+            assert(NSThread.isMainThread && disposition==SAPCommandInvoked);
+            assert(behavior==0?(data!=nil && !error):(!data && error.length));completions++;
+        };
+        if(kind)SAPSetPlaylistOfflineOnceWithDisposition(@"spotify:playlist:1234567890123456789012",YES,result);
+        else SAPCallOfflineCommandOnceWithDisposition(@"SetOfflinePlaybackAllowed",SAPProtoInteger(1,1),result);
+        waitFor(^BOOL{return completions==1;});
+        assert((kind?t.playlistCount:t.commandCount)==previous+1);
+        assert(cosmos.commandCount==0 && cosmos.playlistCount==0 && bad.commandCount==0 && bad.playlistCount==0);
+        if(behavior==1) {
+            if(kind)t.playlistLateCallback(NSData.data);else t.commandLateCallback(SAPProtoInteger(1,1));
+            until=[NSDate dateWithTimeIntervalSinceNow:.08];
+            while(until.timeIntervalSinceNow>0)[NSRunLoop.mainRunLoop runUntilDate:[NSDate dateWithTimeIntervalSinceNow:.002]];
+            assert(completions==1 && (kind?t.playlistCount:t.commandCount)==previous+1);
+        }
+    }
+    t.commandBehavior=0;t.playlistBehavior=0;
+    __block unsigned validationReplies=0;unsigned validationCommands=t.commandCount,validationPlaylists=t.playlistCount;
+    void (^invalidCommand)(NSData *,NSString *,SAPCommandInvocationDisposition)=^(NSData *data,NSString *error,SAPCommandInvocationDisposition disposition){
+        assert(NSThread.isMainThread && !data && error.length && disposition==SAPCommandNotInvoked);validationReplies++;
+    };
+    SAPCallOfflineCommandOnceWithDisposition(@"UnknownMutation",NSData.data,invalidCommand);
+    SAPSetPlaylistOfflineOnceWithDisposition(trackURI,YES,invalidCommand);
+    waitFor(^BOOL{return validationReplies==2;});
+    assert(t.commandCount==validationCommands && t.playlistCount==validationPlaylists);
+    // A previously proven object's changed signature fails before objc_msgSend.
+    SEL singleSelector=NSSelectorFromString(@"callSingle:method:payload:onResponse:");
+    Class originalSingleClass=object_getClass(t);
+    Class incompatibleSingle=objc_allocateClassPair(originalSingleClass,"SAPIncompatibleSingleBridgeFixture",0);
+    assert(incompatibleSingle && class_addMethod(incompatibleSingle,singleSelector,
+        method_getImplementation(class_getInstanceMethod(originalSingleClass,singleSelector)),"v@:@@@@"));
+    objc_registerClassPair(incompatibleSingle);object_setClass(t,incompatibleSingle);
+    SAPCallOfflineCommandOnceWithDisposition(@"SetOfflinePlaybackAllowed",SAPProtoInteger(1,1),invalidCommand);
+    SAPSetPlaylistOfflineOnceWithDisposition(@"spotify:playlist:1234567890123456789012",YES,invalidCommand);
+    waitFor(^BOOL{return validationReplies==4;});
+    assert(t.commandCount==validationCommands && t.playlistCount==validationPlaylists);
+    object_setClass(t,originalSingleClass);
+    puts("PASS: mutation disposition separates invalid/signature-rejected requests from success, timeout, nil reply and native exception; each invocation occurs once and late replies stay inert");
+    for(unsigned behavior=0;behavior<3;behavior++) {
+        t.collectionBehavior=behavior;unsigned previous=t.collectionCount;__block unsigned completions=0;
+        SAPAddAlbumToLibraryOnce(@"spotify:album:1234567890123456789012",^(NSData *d,NSString *e){
+            assert(behavior==0?(d.length==5 && !e):(!d && e.length));completions++;
+        });
+        waitFor(^BOOL{return completions==1;});assert(t.collectionCount==previous+1 && cosmos.collectionCount==0 && bad.collectionCount==0);
+        if(behavior==1) {
+            t.collectionLateCallback(NSData.data);NSDate *until=[NSDate dateWithTimeIntervalSinceNow:.08];
+            while(until.timeIntervalSinceNow>0)[NSRunLoop.mainRunLoop runUntilDate:[NSDate dateWithTimeIntervalSinceNow:.002]];
+            assert(completions==1 && t.collectionCount==previous+1);
+        }
+    }
+    unsigned previousCollections=t.collectionCount;answered=NO;
+    SAPAddAlbumToLibraryOnce(trackURI,^(NSData *d,NSString *e){assert(!d && e.length);answered=YES;});waitFor(^BOOL{return answered;});assert(t.collectionCount==previousCollections);
+    puts("PASS: exact native Collection.Add album payload, one proven endpoint once; timeout/invalid/late replies never replay the mutation; non-album identities rejected");
+    unsigned previousAlbumRemoves=t.removes;answered=NO;
+    SAPCallOfflineCommandOnce(@"RemoveDownload",SAPProtoBytes(2,[@"spotify:album:1234567890123456789012" dataUsingEncoding:NSUTF8StringEncoding]),^(NSData *d,NSString *e){assert(d&&!e);answered=YES;});
+    waitFor(^BOOL{return answered;});assert(t.removes==previousAlbumRemoves+1);
+    puts("PASS: exact native album RemoveDownload uses one verified endpoint once");
+    // A discovered object with an incompatible stream signature cannot be
+    // invoked, even if a prior single reply established transport evidence.
+    SEL streamSelector=NSSelectorFromString(@"callStream:method:payload:onResponse:");
+    Class bridgeClass=SPTEsperantoTransportBridgeImpl.class,cosmosClass=SPTEsperantoCosmosTransport.class;
+    Method bridgeStream=class_getInstanceMethod(bridgeClass,streamSelector),cosmosStream=class_getInstanceMethod(cosmosClass,streamSelector);
+    IMP bridgeImplementation=method_getImplementation(bridgeStream),cosmosImplementation=method_getImplementation(cosmosStream);
+    Class incompatibleBridge=objc_allocateClassPair(bridgeClass,"SAPIncompatibleStreamBridgeFixture",0),incompatibleCosmos=objc_allocateClassPair(cosmosClass,"SAPIncompatibleStreamCosmosFixture",0);
+    assert(incompatibleBridge && incompatibleCosmos);assert(class_addMethod(incompatibleBridge,streamSelector,bridgeImplementation,"v@:@@@@"));assert(class_addMethod(incompatibleCosmos,streamSelector,cosmosImplementation,"v@:@@@@"));objc_registerClassPair(incompatibleBridge);objc_registerClassPair(incompatibleCosmos);
+    object_setClass(t,incompatibleBridge);object_setClass(bad,incompatibleBridge);object_setClass(quiet,incompatibleBridge);object_setClass(cosmos,incompatibleCosmos);
+    __block unsigned signatureErrors=0;unsigned signatureStreams=t.contextStreamCount+cosmos.contextStreamCount+bad.contextStreamCount+quiet.contextStreamCount;
+    dispatch_block_t cancelInvalidSignature=SAPSubscribeReadOnlyService(@"spotify.offline_esperanto.proto.Offline",@"SubscribeContexts",NSData.data,
+        ^(NSData *data,NSString *error){assert(!data && [error isEqual:@"No Spotify stream candidate passed read-only verification."]);signatureErrors++;});
+    waitFor(^BOOL{return signatureErrors==1;});
+    until=[NSDate dateWithTimeIntervalSinceNow:.2];while(until.timeIntervalSinceNow>0)[NSRunLoop.mainRunLoop runUntilDate:[NSDate dateWithTimeIntervalSinceNow:.002]];
+    assert(signatureErrors==1 && t.contextStreamCount+cosmos.contextStreamCount+bad.contextStreamCount+quiet.contextStreamCount==signatureStreams);
+    cancelInvalidSignature();cancelInvalidSignature=nil;
+    object_setClass(t,bridgeClass);object_setClass(bad,bridgeClass);object_setClass(quiet,bridgeClass);object_setClass(cosmos,cosmosClass);
+    puts("PASS: incompatible stream signatures are never called, return one exact verification error, and schedule no infinite retry");
     puts("PASS: native preparation failure/cancellation; native transport/descriptor routing; exact one-track wire request; journal observation of every Offline call; actual rejection codes vs no response; independent item-state completion; transient/incorrect/nil responses; cached track; cancellation; stale callback; no idle polling");
 } }

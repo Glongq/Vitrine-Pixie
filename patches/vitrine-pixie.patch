@@ -1,18 +1,4 @@
-diff --git a/harness/album/build.sh b/harness/album/build.sh
-index 79e59b7..02ba604 100755
---- a/harness/album/build.sh
-+++ b/harness/album/build.sh
-@@ -21,7 +21,7 @@ xcrun -sdk iphonesimulator clang -target arm64-apple-ios17.0-simulator -fobjc-ar
-     "$SRC"/Redesigned/Kit/SGRGlass.m "$SRC"/Redesigned/Kit/SGRGlyph.m "$SRC"/Redesigned/Kit/SGRRestyle.m \
-     "$SRC"/Redesigned/Kit/SGRActionRow.m "$SRC"/Redesigned/Kit/SGRDownload.m "$SRC"/Redesigned/Kit/SGRHeaderInfo.m \
-     "$SRC"/Redesigned/Kit/SGRedesign.m "$SRC"/Redesigned/Album/AlbumCredits.m \
--    -framework UIKit -framework QuartzCore -framework CoreGraphics -framework CoreImage -framework Foundation -framework Symbols -framework AVFoundation -framework CoreMedia \
-+    -framework UIKit -framework QuartzCore -framework CoreGraphics -framework CoreImage -framework Foundation -framework Symbols -framework AVFoundation -framework CoreMedia -framework CoreText \
-     -o "$OUT/AlbumHarness.app/AlbumHarness"
- 
- cat > "$OUT/AlbumHarness.app/Info.plist" <<'PLIST'
 diff --git a/harness/album/main.m b/harness/album/main.m
-index b5eb9c3..7a1dc2e 100644
 --- a/harness/album/main.m
 +++ b/harness/album/main.m
 @@ -4,6 +4,48 @@
@@ -64,7 +50,7 @@ index b5eb9c3..7a1dc2e 100644
  
  #pragma mark - Spotify's classes, by name
  
-@@ -656,6 +698,8 @@ static NSString *trailingLabel(UIView *root) {
+@@ -656,6 +698,8 @@
          NSLog(@"[harness] Spotify's own frames put back; the redesign answered with title stack %@, action row %@",
                NSStringFromCGRect(self->_titleStack.frame), NSStringFromCGRect(self->_actionRow.frame));
      });
@@ -73,29 +59,213 @@ index b5eb9c3..7a1dc2e 100644
      return YES;
  }
  
+diff --git a/harness/artist/build.sh b/harness/artist/build.sh
+--- a/harness/artist/build.sh
++++ b/harness/artist/build.sh
+@@ -1,7 +1,7 @@
+ #!/bin/sh
+ set -e
+ SRC=$(cd "$(dirname "$0")/../../tweak/Sources" && pwd)
+-OUT=$(dirname "$0")/build
++OUT=${ARTIST_HARNESS_OUT:-$(dirname "$0")/build}
+ rm -rf "$OUT"; mkdir -p "$OUT/gen" "$OUT/ArtistHarness.app"
+ 
+ for f in Redesigned/Artist/ArtistField.x Redesigned/Artist/ArtistHeader.x Redesigned/Artist/ArtistSections.x Redesigned/Artist/ArtistFollow.x; do
+@@ -22,6 +22,7 @@
+     "$SRC"/Redesigned/Kit/SGRActionRow.m "$SRC"/Redesigned/Kit/SGRDownload.m "$SRC"/Redesigned/Kit/SGRHeaderInfo.m \
+     "$SRC"/Redesigned/Kit/SGRedesign.m \
+     -framework UIKit -framework QuartzCore -framework CoreGraphics -framework CoreImage -framework Foundation -framework Symbols -framework AVFoundation -framework CoreMedia \
++    -Wl,-export_dynamic \
+     -o "$OUT/ArtistHarness.app/ArtistHarness"
+ 
+ cat > "$OUT/ArtistHarness.app/Info.plist" <<'PLIST'
+diff --git a/harness/artist/main.m b/harness/artist/main.m
+--- a/harness/artist/main.m
++++ b/harness/artist/main.m
+@@ -7,6 +7,19 @@
+ // The follow state comes from a mock of Spotify's collection platform under its real class and selector
+ // names: `none` at once, or in `late` a second in; Following, as saved, after the tap made at 2.5 s.
+ #import <UIKit/UIKit.h>
++#import "Redesigned/Kit/SGRHeaderInfo.h"
++#include <assert.h>
++
++static NSUInteger downloadPickerCalls, shuffleCalls, playCalls, followCalls;
++static NSString *downloadArtistURI, *downloadArtistName;
++static __weak UIViewController *downloadPresenter;
++
++__attribute__((visibility("default"))) void SAPShowArtistDownloads(NSString *uri, NSString *name, UIViewController *presenter) {
++    downloadPickerCalls++;
++    downloadArtistURI = [uri copy];
++    downloadArtistName = [name copy];
++    downloadPresenter = presenter;
++}
+ 
+ #pragma mark - Spotify's classes, by name
+ 
+@@ -115,7 +128,11 @@
+ // The page's controller, which Spotify's answer spt_pageURI with the artist's URI.
+ @interface MockArtistPageController : UIViewController @end
+ @implementation MockArtistPageController
+-- (NSURL *)spt_pageURI { return [NSURL URLWithString:@"spotify:artist:7n2wHs1TKAczGzO7Dd2rGr"]; }
++- (NSURL *)spt_pageURI {
++    if ([NSProcessInfo.processInfo.arguments containsObject:@"fallback-uri"]) return nil;
++    if ([NSProcessInfo.processInfo.arguments containsObject:@"conflicting-uri"]) return [NSURL URLWithString:@"spotify:artist:0000000000000000000000"];
++    return [NSURL URLWithString:@"spotify:artist:7n2wHs1TKAczGzO7Dd2rGr"];
++}
+ @end
+ 
+ // Encore's image view, the one every picture Spotify loads arrives in (01.txt:48). Its name is the point of
+@@ -306,9 +323,12 @@
+     if (late) follow.accessibilityLabel = nil;
+     [(UIControl *)follow addTarget:self action:@selector(toggleFollow:) forControlEvents:UIControlEventTouchUpInside];
+     glyph(box(row, MockButton.class, CGRectMake(148, 0, 48, 48), @"Components.UI.ContextMenuButton-7n2wHs1TKAczGzO7Dd2rGr"), @"ellipsis", 12);
+-    glyph(box(row, MockButton.class, CGRectMake(278, 0, 48, 48), @"Components.UI.ShuffleButton"), @"shuffle", 12);
++    UIControl *shuffle = (UIControl *)box(row, MockButton.class, CGRectMake(278, 0, 48, 48), @"Components.UI.ShuffleButton");
++    [shuffle addTarget:self action:@selector(tapShuffle:) forControlEvents:UIControlEventTouchUpInside];
++    glyph(shuffle, @"shuffle", 12);
+     UIView *play = box(row, _TtC28EncoreConsumerMobile_BaseKit14PlayButtonView.class, CGRectMake(334, 0, 48, 48), @"header-play-button");
+     UIControl *condensed = (UIControl *)box(play, MockButton.class, play.bounds, nil);
++    [condensed addTarget:self action:@selector(tapPlay:) forControlEvents:UIControlEventTouchUpInside];
+     condensed.accessibilityLabel = @"Play";
+     UIImageView *disc = glyph(condensed, @"play.fill", 0);
+     disc.contentMode = UIViewContentModeCenter;
+@@ -407,7 +427,7 @@
+                 UIView *v = queue.firstObject;
+                 [queue removeObjectAtIndex:0];
+                 [queue addObjectsFromArray:v.subviews];
+-                if (![NSStringFromClass(v.class) isEqualToString:@"SGRMirrorButton"] || v.frame.origin.x < 200) continue;
++                if (![v.accessibilityIdentifier isEqualToString:@"Vitrine.Artist.Follow"]) continue;
+                 tapped = (UIControl *)v;
+                 NSMutableArray *drawn = [NSMutableArray array];
+                 for (UIView *sub in v.subviews) {
+@@ -426,6 +446,88 @@
+             }
+             NSLog(@"[harness] follow at %.1fs: %@", when.doubleValue, [lines componentsJoinedByString:@" | "]);
+             if (when.doubleValue == 2.5) [tapped sendActionsForControlEvents:UIControlEventTouchUpInside];
++        });
++    }
++
++    if ([NSProcessInfo.processInfo.arguments containsObject:@"verify-actions"]) {
++        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(3.5 * NSEC_PER_SEC)), dispatch_get_main_queue(), ^{
++            NSMutableArray<UIView *> *queue = [NSMutableArray arrayWithObject:container];
++            SGRHeaderInfo *info = nil;
++            while (queue.count && !info) {
++                UIView *view = queue.firstObject;
++                [queue removeObjectAtIndex:0];
++                if ([view isKindOfClass:SGRHeaderInfo.class]) info = (id)view;
++                [queue addObjectsFromArray:view.subviews];
++            }
++            assert(info);
++            UIScrollView *controls = [info valueForKey:@"_albumControls"];
++            UIControl *download = [info valueForKey:@"_artistDownload"];
++            UIControl *mirroredShuffle = [info valueForKey:@"_shuffle"];
++            UIControl *mirroredFollow = [info valueForKey:@"_trailing"];
++            UIControl *mirroredPlay = [info valueForKey:@"_play"];
++            assert([controls.accessibilityIdentifier isEqualToString:@"Vitrine.Artist.Actions"]);
++            BOOL conflict = [NSProcessInfo.processInfo.arguments containsObject:@"conflicting-uri"];
++            assert(download.hidden == conflict);
++            if (!conflict) {
++                [download sendActionsForControlEvents:UIControlEventTouchUpInside];
++                assert(downloadPickerCalls == 1);
++                assert([downloadArtistURI isEqualToString:@"spotify:artist:7n2wHs1TKAczGzO7Dd2rGr"]);
++                assert([downloadArtistName isEqualToString:NSProcessInfo.processInfo.environment[@"HARNESS_ARTIST"] ?: @"Shawn Mendes"]);
++                assert(downloadPresenter == root);
++            } else {
++                [download sendActionsForControlEvents:UIControlEventTouchUpInside];
++                assert(downloadPickerCalls == 0);
++            }
++            assert([[mirroredFollow valueForKey:@"_stateShown"] integerValue] == ((sgh_platform.stateProvider.raw & 1) != 0));
++            NSUInteger followsBefore = followCalls;
++            [mirroredShuffle sendActionsForControlEvents:UIControlEventTouchUpInside];
++            [mirroredPlay sendActionsForControlEvents:UIControlEventTouchUpInside];
++            [mirroredFollow sendActionsForControlEvents:UIControlEventTouchUpInside];
++            assert(shuffleCalls == 1 && playCalls == 1 && followCalls == followsBefore + 1);
++            CGRect original = info.frame;
++            for (NSNumber *width in @[@402, @320, @260]) {
++                info.frame = CGRectMake(original.origin.x, original.origin.y, width.doubleValue, original.size.height);
++                [info setNeedsLayout];
++                [info layoutIfNeeded];
++                assert(CGRectGetMaxX(mirroredPlay.frame) <= width.doubleValue - 19.5);
++                assert(CGRectGetMaxX(controls.frame) + 15.5 <= CGRectGetMinX(mirroredPlay.frame));
++                assert(CGRectGetMaxX(mirroredShuffle.frame) <= CGRectGetMinX(download.frame));
++                assert(CGRectGetMaxX(download.frame) <= CGRectGetMinX(mirroredFollow.frame));
++                if (width.doubleValue == 260) assert(controls.scrollEnabled);
++            }
++            info.frame = original;
++            [info setNeedsLayout];
++            [info layoutIfNeeded];
++            // Album and playlist use this same API. Their native download and
++            // add controls must retain the existing shuffle/download/add order.
++            SGRHeaderInfo *album = [[SGRHeaderInfo alloc] initWithFrame:CGRectMake(0, 0, 320, 240)];
++            UIControl *albumDownloadSource = [[UIControl alloc] initWithFrame:CGRectMake(0, 0, 48, 48)];
++            glyph(albumDownloadSource, @"arrow.down", 12);
++            [album showAlbumShuffle:shuffle play:play download:albumDownloadSource add:follow playColor:UIColor.whiteColor];
++            [album layoutIfNeeded];
++            UIScrollView *albumControls = [album valueForKey:@"_albumControls"];
++            UIView *albumShuffle = [album valueForKey:@"_shuffle"];
++            UIView *albumDownload = [album valueForKey:@"_albumDownload"];
++            UIView *albumAdd = [album valueForKey:@"_trailing"];
++            UIView *albumPlay = [album valueForKey:@"_play"];
++            assert([[albumDownload valueForKey:@"source"] isEqual:albumDownloadSource]);
++            assert([[albumAdd valueForKey:@"source"] isEqual:follow]);
++            assert(CGRectGetMaxX(albumShuffle.frame) < CGRectGetMinX(albumDownload.frame));
++            assert(CGRectGetMaxX(albumDownload.frame) < CGRectGetMinX(albumAdd.frame));
++            assert(CGRectGetMaxX(albumControls.frame) + 15.5 <= CGRectGetMinX(albumPlay.frame));
++            assert(albumControls.scrollEnabled);
++            [album showAlbumShuffle:shuffle play:play download:nil add:follow playColor:UIColor.whiteColor];
++            [album layoutIfNeeded];
++            assert(albumDownload.hidden && CGRectGetMaxX(albumShuffle.frame) < CGRectGetMinX(albumAdd.frame));
++            SGRHeaderInfo *legacy = [[SGRHeaderInfo alloc] initWithFrame:CGRectMake(0, 0, 402, 240)];
++            [legacy showShuffle:shuffle play:play trailing:follow trailingFallback:nil playColor:UIColor.whiteColor];
++            [legacy layoutIfNeeded];
++            UIView *legacyPlay = [legacy valueForKey:@"_play"];
++            assert(fabs(CGRectGetMidX(legacyPlay.frame) - 201) < 0.5);
++            NSString *result = @"PASS: artist Shuffle/Download/Follow leading group, trailing Play, narrow scrolling, exact URI/name/presenter, native actions and identity conflict guard; album/playlist native controls and legacy centered Play preserved\n";
++            NSURL *documents = [NSFileManager.defaultManager URLsForDirectory:NSDocumentDirectory inDomains:NSUserDomainMask].firstObject;
++            [result writeToURL:[documents URLByAppendingPathComponent:@"artist-actions-result.log"] atomically:YES encoding:NSUTF8StringEncoding error:nil];
++            NSLog(@"[harness] %@", result);
+         });
+     }
+ 
+@@ -474,6 +576,7 @@
+ 
+ // Spotify's Follow turns into Following, which the redesign's word has to follow.
+ - (void)toggleFollow:(UIControl *)follow {
++    followCalls++;
+     UILabel *word = nil;
+     NSMutableArray *queue = [NSMutableArray arrayWithObject:follow];
+     while (queue.count && !word) {
+@@ -488,6 +591,9 @@
+     NSLog(@"[harness] Spotify's Follow fired, now \"%@\"", word.text);
+ }
+ 
++- (void)tapShuffle:(UIControl *)control { shuffleCalls++; }
++- (void)tapPlay:(UIControl *)control { playCalls++; }
++
+ @end
+ 
+ // Before every %ctor, so the redesign's gate reads on.
 diff --git a/harness/local-files/README.md b/harness/local-files/README.md
-index 9a1a18a..07d5bab 100644
 --- a/harness/local-files/README.md
 +++ b/harness/local-files/README.md
-@@ -19,6 +19,13 @@ a rename's key and gone with a delete, and the match by title and artist, folded
+@@ -18,6 +18,13 @@
+ 
  It does not cover the hooks in `LocalFileInfo.x`, the lyrics engine asking for the new key
  (`Shared/Lyrics/KaraokeSource.x`) or the Imported LRC files page.
- 
++
 +`cover.m` also exercises the real fallback-cover resolver against a stand-in for Spotify 9.1.90's
 +unchecked `spt_localFileImagePath`. Before the fix, a one-part metadata URL reproduces the recorded
 +`NSRangeException` (index 2 in an array of one). It checks malformed and unrelated URLs, valid absolute
 +paths/file URLs/escaped local-image URIs, the next metadata field, Now Playing fallback and an edited
 +cover taking precedence. The resolver must never call the unchecked parser. These are resolver tests,
 +not a full Spotify playback test on an iPhone.
-+
+ 
  ## Edit info in the simulator
  
- `sim/build-sim.sh <udid>` builds `EditInfoMenu.x` and `LocalFiles.m` as the tweak compiles them into an
 diff --git a/harness/local-files/build.sh b/harness/local-files/build.sh
-index 9e80d32..65dcb9c 100755
 --- a/harness/local-files/build.sh
 +++ b/harness/local-files/build.sh
-@@ -16,3 +16,8 @@ xcrun -sdk macosx clang -target arm64-apple-ios17.0-macabi -isysroot "$SDK" -ifr
+@@ -16,3 +16,8 @@
      "$SRC/Shared/Lyrics/KaraokeTiming.m" "$SRC/Shared/AdBlock/Protobuf.m" \
      -framework UIKit -framework CoreGraphics -framework Foundation -o "$HERE/build/lrc"
  CFFIXED_USER_HOME="$HERE/build/home" "$HERE/build/lrc"
@@ -106,7 +276,6 @@ index 9e80d32..65dcb9c 100755
 +CFFIXED_USER_HOME="$HERE/build/home" "$HERE/build/cover"
 diff --git a/harness/local-files/cover.m b/harness/local-files/cover.m
 new file mode 100644
-index 0000000..73f088f
 --- /dev/null
 +++ b/harness/local-files/cover.m
 @@ -0,0 +1,96 @@
@@ -207,10 +376,9 @@ index 0000000..73f088f
 +    return 0;
 +} }
 diff --git a/harness/playlist/build.sh b/harness/playlist/build.sh
-index 94411c6..3175289 100755
 --- a/harness/playlist/build.sh
 +++ b/harness/playlist/build.sh
-@@ -21,7 +21,7 @@ xcrun -sdk iphonesimulator clang -target arm64-apple-ios17.0-simulator -fobjc-ar
+@@ -21,7 +21,7 @@
      "$SRC"/Redesigned/Kit/SGRGlass.m "$SRC"/Redesigned/Kit/SGRGlyph.m "$SRC"/Redesigned/Kit/SGRRestyle.m \
      "$SRC"/Redesigned/Kit/SGRActionRow.m "$SRC"/Redesigned/Kit/SGRDownload.m "$SRC"/Redesigned/Kit/SGRHeaderInfo.m \
      "$SRC"/Redesigned/Kit/SGRedesign.m \
@@ -220,7 +388,6 @@ index 94411c6..3175289 100755
  
  cat > "$OUT/PlaylistHarness.app/Info.plist" <<'PLIST'
 diff --git a/harness/playlist/main.m b/harness/playlist/main.m
-index 3c4db0d..08f638d 100644
 --- a/harness/playlist/main.m
 +++ b/harness/playlist/main.m
 @@ -3,6 +3,52 @@
@@ -276,7 +443,7 @@ index 3c4db0d..08f638d 100644
  
  #pragma mark - Spotify's classes, by name
  
-@@ -692,7 +738,8 @@ static void buildLikedSongs(UIViewController *page, CGFloat W) {
+@@ -692,7 +738,8 @@
      }
      // Drawn by Lottie, its state in its identifier and in the Encore object behind it (issue #65).
      UIView *downloadAction = box(actions, UIView.class, CGRectMake(106, 0, 48, 48), nil);
@@ -286,7 +453,7 @@ index 3c4db0d..08f638d 100644
      actionButton(actions, CGRectMake(154, 2, 44, 44), @"Components.UI.ContextMenuButton", @"More options");
  
      UIView *mixShuffle = box(container, UIView.class, CGRectMake(container.bounds.size.width - 124, 0, 124, 48), nil);
-@@ -934,6 +981,12 @@ static void buildLikedSongs(UIViewController *page, CGFloat W) {
+@@ -934,6 +981,12 @@
                gradient.hidden, gradient.layer.mask != nil, playButton.hidden, playButton.layer.mask != nil,
                cover.hidden, cover.layer.mask != nil);
      });
@@ -300,10 +467,9 @@ index 3c4db0d..08f638d 100644
  }
  
 diff --git a/scripts/extract-flags.py b/scripts/extract-flags.py
-index 4563ba0..c689293 100755
 --- a/scripts/extract-flags.py
 +++ b/scripts/extract-flags.py
-@@ -44,8 +44,10 @@ class Binary:
+@@ -44,8 +44,10 @@
              if m:
                  self.keys[BASE + int(m.group(1), 16)] = m.group(2)
          self.thunks = []
@@ -317,10 +483,9 @@ index 4563ba0..c689293 100755
                  self.thunks.append(int(m.group(1), 16))
  
 diff --git a/tweak/Sources/App/About/About.h b/tweak/Sources/App/About/About.h
-index bcb0bb1..3b70eb6 100644
 --- a/tweak/Sources/App/About/About.h
 +++ b/tweak/Sources/App/About/About.h
-@@ -76,5 +76,6 @@ void SGImportSettings(void);
+@@ -76,5 +76,6 @@
  // log lines and the config Spotify's server last sent (Shared/AdBlock/Premium.m). No account details or settings
  // values beyond the switches named; the log can name songs played.
  void SGShareDiagnostics(void);
@@ -328,10 +493,9 @@ index bcb0bb1..3b70eb6 100644
  
  UIViewController *SGAboutPage(void);   // the Mod page
 diff --git a/tweak/Sources/App/About/AboutSettings.m b/tweak/Sources/App/About/AboutSettings.m
-index 713d8ad..04e2ed2 100644
 --- a/tweak/Sources/App/About/AboutSettings.m
 +++ b/tweak/Sources/App/About/AboutSettings.m
-@@ -89,8 +89,6 @@ UIViewController *SGAboutPage(void) {
+@@ -89,8 +89,6 @@
          SGSection(nil, @[
              withSymbol(SGActionRow(@"Export settings", nil, ^{ SGExportSettings(); }), @"square.and.arrow.up"),
              withSymbol(SGActionRow(@"Import settings", nil, ^{ SGImportSettings(); }), @"square.and.arrow.down"),
@@ -341,10 +505,9 @@ index 713d8ad..04e2ed2 100644
          SGSection(nil, @[clearKeys, reset]),
      ] footer:nil];
 diff --git a/tweak/Sources/App/About/Backup.m b/tweak/Sources/App/About/Backup.m
-index 082271a..fae0171 100644
 --- a/tweak/Sources/App/About/Backup.m
 +++ b/tweak/Sources/App/About/Backup.m
-@@ -52,7 +52,7 @@ void SGExportSettings(void) {
+@@ -52,7 +52,7 @@
      [top presentViewController:sheet animated:YES completion:nil];
  }
  
@@ -353,7 +516,7 @@ index 082271a..fae0171 100644
      NSMutableString *text = [NSMutableString string];
      struct utsname machine;
      uname(&machine);
-@@ -90,6 +90,11 @@ void SGShareDiagnostics(void) {
+@@ -90,6 +90,11 @@
  
      NSURL *url = [NSURL fileURLWithPath:[NSTemporaryDirectory() stringByAppendingPathComponent:@"vitrine-diagnostics.txt"]];
      [text writeToURL:url atomically:YES encoding:NSUTF8StringEncoding error:nil];
@@ -365,11 +528,434 @@ index 082271a..fae0171 100644
      UIViewController *top = SGTopController();
      UIActivityViewController *sheet = [[UIActivityViewController alloc] initWithActivityItems:@[url] applicationActivities:nil];
      sheet.popoverPresentationController.sourceView = top.view;
+diff --git a/tweak/Sources/App/Onboarding/SGWhatsNewNotes.h b/tweak/Sources/App/Onboarding/SGWhatsNewNotes.h
+new file mode 100644
+--- /dev/null
++++ b/tweak/Sources/App/Onboarding/SGWhatsNewNotes.h
+@@ -0,0 +1,52 @@
++// Generated by scripts/whats-new.sh from CHANGELOG.md for 1.0.0-beta.16. Do not edit.
++static NSString *const SGWhatsNewNotes = @""
++    "\n"
++    "\n"
++    "### Features\n"
++    "\n"
++    "* a 20th Anniversary app icon to pick in Appearance ([#69](https://github.com/My-Name-Is-Jeff/vitrine/issues/69)) ([2c1d860](https://github.com/My-Name-Is-Jeff/vitrine/commit/2c1d8606764d1990a2e35d7637fbab47d360e6e4))\n"
++    "* a Full bleed covers switch for album and playlist pages ([#123](https://github.com/My-Name-Is-Jeff/vitrine/issues/123)) ([88fd0ea](https://github.com/My-Name-Is-Jeff/vitrine/commit/88fd0ea3ac7781bc0c9408e122f93389ec659597))\n"
++    "* a switch shows the Top picks heading on the redesigned Home ([#129](https://github.com/My-Name-Is-Jeff/vitrine/issues/129)) ([94d655e](https://github.com/My-Name-Is-Jeff/vitrine/commit/94d655e4396e1fedcbcb4e8c2b6c5d96e85bfb08))\n"
++    "* Hide the controls can keep the title over the lyrics ([#133](https://github.com/My-Name-Is-Jeff/vitrine/issues/133)) ([80c6d54](https://github.com/My-Name-Is-Jeff/vitrine/commit/80c6d54fda040dbfe292f74aad9ebfd222875439))\n"
++    "* hide the full screen cover that a tap on the cover opens ([#150](https://github.com/My-Name-Is-Jeff/vitrine/issues/150)) ([69730d1](https://github.com/My-Name-Is-Jeff/vitrine/commit/69730d1b15647976ddcadf150abbd20f16e649e1))\n"
++    "* Hide upsells and Hide ads cover the flags new in 9.1.94 ([9c89598](https://github.com/My-Name-Is-Jeff/vitrine/commit/9c8959882d0a5dd264cea032cd8a42d6b0403213))\n"
++    "* Labs shows only the flags this Spotify has, and adds the agent button ([fdc194c](https://github.com/My-Name-Is-Jeff/vitrine/commit/fdc194cbff4d2b2e473e44388e375fc6fd39f7f4))\n"
++    "* lock screen lyrics can show the line's translation ([#130](https://github.com/My-Name-Is-Jeff/vitrine/issues/130)) ([d5d29a8](https://github.com/My-Name-Is-Jeff/vitrine/commit/d5d29a8edfd927ff8ea10aa06a353d571c411063))\n"
++    "* **lyrics:** batch translate albums and playlists from the ellipsis menu ([#145](https://github.com/My-Name-Is-Jeff/vitrine/issues/145)) ([0a11c10](https://github.com/My-Name-Is-Jeff/vitrine/commit/0a11c1097c9b0526886789238b9c474e0fb39033))\n"
++    "* **lyrics:** bump Gemini to 3.8 Flash and add thinking and timeout settings ([#102](https://github.com/My-Name-Is-Jeff/vitrine/issues/102)) ([2890b0d](https://github.com/My-Name-Is-Jeff/vitrine/commit/2890b0ddf4d9a943e758c1f18c80dce34275da1a))\n"
++    "* **lyrics:** show romanized lyrics in place of original script ([#159](https://github.com/My-Name-Is-Jeff/vitrine/issues/159)) ([0373147](https://github.com/My-Name-Is-Jeff/vitrine/commit/03731476c1fe1ee4d1b3563a3a18d43b9007337a))\n"
++    "* Made For You's covers are rounded like Home's in the redesign ([#139](https://github.com/My-Name-Is-Jeff/vitrine/issues/139)) ([0ecd8a0](https://github.com/My-Name-Is-Jeff/vitrine/commit/0ecd8a02d10fe59fa237285e7160565f7983af21))\n"
++    "* Make the karaoke break dots hop at a fixed speed ([#136](https://github.com/My-Name-Is-Jeff/vitrine/issues/136)) ([8d09a5e](https://github.com/My-Name-Is-Jeff/vitrine/commit/8d09a5e3ff5e3c25a722569144fe8321d80ead51))\n"
++    "* prompt to download missing languages with native sheet and Translate settings fallback ([#105](https://github.com/My-Name-Is-Jeff/vitrine/issues/105)) ([8eebc71](https://github.com/My-Name-Is-Jeff/vitrine/commit/8eebc71cb6c65f232c9568d313977cb11173c188))\n"
++    "* Redesign volume slider to match the look and feel of iOS 16 and up ([#135](https://github.com/My-Name-Is-Jeff/vitrine/issues/135)) ([b7972c5](https://github.com/My-Name-Is-Jeff/vitrine/commit/b7972c54417a4979dd677d04086a20592fec7651))\n"
++    "* Spoof Premium adds shuffle settings, smart shuffle in Jams and Automix ([8b4a24b](https://github.com/My-Name-Is-Jeff/vitrine/commit/8b4a24b8a08cbda5eaee3c30abee3ceffd98e29c))\n"
++    "* Spoof Premium drops more of Free's limits, Hide upsells hides 4 more ([981873c](https://github.com/My-Name-Is-Jeff/vitrine/commit/981873c0df91e5b8e527f9c84aae06bc7a6549bc))\n"
++    "* Spoof Premium shows the DJ in more countries (experiment) ([69bbefb](https://github.com/My-Name-Is-Jeff/vitrine/commit/69bbefb9f17fa8f6ac0733183c0c4f87271999e2))\n"
++    "* switches to hide shuffle and repeat on the redesigned player ([#120](https://github.com/My-Name-Is-Jeff/vitrine/issues/120)) ([f08078c](https://github.com/My-Name-Is-Jeff/vitrine/commit/f08078c23549ec30a9415d2d3b6743bbbe391cc9))\n"
++    "* the mini player docks in a Jam and follows the cover ([#144](https://github.com/My-Name-Is-Jeff/vitrine/issues/144)) ([5c8a87c](https://github.com/My-Name-Is-Jeff/vitrine/commit/5c8a87cafe98f48bd6f6d8ff39ed705c89667752))\n"
++    "* the player footer uses the Music app's AirPlay and queue glyphs ([#125](https://github.com/My-Name-Is-Jeff/vitrine/issues/125)) ([5af61ba](https://github.com/My-Name-Is-Jeff/vitrine/commit/5af61bad64c9450b3db6ef96fd0b01e537b0dd24))\n"
++    "* the redesigned Home title can stay at the top as Home scrolls ([#121](https://github.com/My-Name-Is-Jeff/vitrine/issues/121)) ([f531742](https://github.com/My-Name-Is-Jeff/vitrine/commit/f531742f09a03e831244d3fc5b2f3c9df9d0880b))\n"
++    "\n"
++    "\n"
++    "### Fixes\n"
++    "\n"
++    "* a local file with no cover does not crash Spotify ([#161](https://github.com/My-Name-Is-Jeff/vitrine/issues/161)) ([29a470f](https://github.com/My-Name-Is-Jeff/vitrine/commit/29a470f23c5b21691903a74944cc8da49e8437c4)), closes [#157](https://github.com/My-Name-Is-Jeff/vitrine/issues/157)\n"
++    "* an imported LRC file stays the song's lyrics with word timing preferred ([#119](https://github.com/My-Name-Is-Jeff/vitrine/issues/119)) ([4c653dc](https://github.com/My-Name-Is-Jeff/vitrine/commit/4c653dc680337a9280fbba52d1ece1bc03fddc56))\n"
++    "* crossfade and AutoMix reach the player under Spoof Premium ([#127](https://github.com/My-Name-Is-Jeff/vitrine/issues/127)) ([6908585](https://github.com/My-Name-Is-Jeff/vitrine/commit/690858585ad319aa37dd6e94ba5d17c072ab9147))\n"
++    "* cut the work hooks do on every frame, layout pass and player report ([#96](https://github.com/My-Name-Is-Jeff/vitrine/issues/96)) ([10212e4](https://github.com/My-Name-Is-Jeff/vitrine/commit/10212e4516858f440887034bfa137ec04dedbc53))\n"
++    "* Fluid keeps a dark cover's colors, and the lyrics blur is not gray ([#124](https://github.com/My-Name-Is-Jeff/vitrine/issues/124)) ([4f42820](https://github.com/My-Name-Is-Jeff/vitrine/commit/4f42820b7f3c12259b1e8a8f8158afe05a7c348a))\n"
++    "* keep Canvas in shared stories while the redesign hides it ([#131](https://github.com/My-Name-Is-Jeff/vitrine/issues/131)) ([efe2ad5](https://github.com/My-Name-Is-Jeff/vitrine/commit/efe2ad55683575a053d6788de688d821fed6fb36))\n"
++    "* let Siri read the login in sideloaded builds ([#143](https://github.com/My-Name-Is-Jeff/vitrine/issues/143)) ([8eb4bbf](https://github.com/My-Name-Is-Jeff/vitrine/commit/8eb4bbfae504afd91ddfb2aaaa2500091d1724dd))\n"
++    "* **links:** unwrap Safari extension and scheme links into spotify: URIs ([#30](https://github.com/My-Name-Is-Jeff/vitrine/issues/30)) ([#158](https://github.com/My-Name-Is-Jeff/vitrine/issues/158)) ([bd14917](https://github.com/My-Name-Is-Jeff/vitrine/commit/bd14917a169f946c1e75d57b7426b83e5f13b7aa))\n"
++    "* **lyrics:** scrolling the lines hides the controls and scrolling back shows them ([#142](https://github.com/My-Name-Is-Jeff/vitrine/issues/142)) ([85501d0](https://github.com/My-Name-Is-Jeff/vitrine/commit/85501d09ac7b507acf60d29457398e55ba0bb9fd))\n"
++    "* Make audio hook features work in LiveContainer ([#59](https://github.com/My-Name-Is-Jeff/vitrine/issues/59)) ([7768b53](https://github.com/My-Name-Is-Jeff/vitrine/commit/7768b53daa675d8d1bc6ba6932e79d02b7166651))\n"
++    "* Speed and pitch, audio effects and Music Haptics reach Spotify's output on jailbreaks with a read-only import page, through ElleKit ([#137](https://github.com/My-Name-Is-Jeff/vitrine/issues/137)) ([9221256](https://github.com/My-Name-Is-Jeff/vitrine/commit/92212565172529bafb29115c4d37cd83c63c0c85))\n"
++    "* **speed:** recover from buffer starvation during high-speed playback ([#103](https://github.com/My-Name-Is-Jeff/vitrine/issues/103)) ([063ca6b](https://github.com/My-Name-Is-Jeff/vitrine/commit/063ca6bc0108308113639d7c4ac8f8daaebb2990))\n"
++    "* stop idle wakeups and repeated layout work that cost battery ([#165](https://github.com/My-Name-Is-Jeff/vitrine/issues/165)) ([430766c](https://github.com/My-Name-Is-Jeff/vitrine/commit/430766cdd170e1ef09e3c28dfe607d54106a0e8d))\n"
++    "* the album page no longer hangs on the sections under the tracks ([#128](https://github.com/My-Name-Is-Jeff/vitrine/issues/128)) ([ffe336c](https://github.com/My-Name-Is-Jeff/vitrine/commit/ffe336cad997df05fb03e623c336d0a8cf318d7d))\n"
++    "* the animated cover is dimmed only where text sits ([#132](https://github.com/My-Name-Is-Jeff/vitrine/issues/132)) ([e16cf05](https://github.com/My-Name-Is-Jeff/vitrine/commit/e16cf05d859565f0bf1474a182497d5bead1b4e7))\n"
++    "* the Mod Settings row takes the font of Spotify's row titles, not a 13 pt badge's ([#140](https://github.com/My-Name-Is-Jeff/vitrine/issues/140)) ([7160ec6](https://github.com/My-Name-Is-Jeff/vitrine/commit/7160ec6fe1a3d1769acfa3024cfd8fad7b84df8c))\n"
++    "* the player opens without a flash and closes onto its mini player ([#122](https://github.com/My-Name-Is-Jeff/vitrine/issues/122)) ([fbcbf19](https://github.com/My-Name-Is-Jeff/vitrine/commit/fbcbf1936e2c3cc046180ede99421096a115855c))\n"
++    "* the player's Connect button stays in its place and the volume row no longer covers the controls ([#138](https://github.com/My-Name-Is-Jeff/vitrine/issues/138)) ([f3ce5b4](https://github.com/My-Name-Is-Jeff/vitrine/commit/f3ce5b415b857f304fd39a0072c8888803a05537))\n"
++    "\n"
++    ;
+diff --git a/tweak/Sources/Native/Artist/Artist.h b/tweak/Sources/Native/Artist/Artist.h
+--- a/tweak/Sources/Native/Artist/Artist.h
++++ b/tweak/Sources/Native/Artist/Artist.h
+@@ -25,3 +25,6 @@
+ #define SGHideArtistDiscoveredOn @"spotifyglass.hide.artistDiscoveredOn"
+ 
+ UIViewController *SGArtistSettingsPage(void);   // opened from the Home & Library page
++
++// Native action-row button; called by the existing artist header layout hooks.
++void SGArtistUpdateDownloads(UIView *header);
+diff --git a/tweak/Sources/Native/Artist/Artist.x b/tweak/Sources/Native/Artist/Artist.x
+--- a/tweak/Sources/Native/Artist/Artist.x
++++ b/tweak/Sources/Native/Artist/Artist.x
+@@ -63,7 +63,11 @@
+         idents[count] = buttons[i].ident;
+         keys[count++] = &kButtonKeys[i];
+     }
+-    if (!count) return;
++    if (!count) {
++        // Downloads are independent of the optional artist visibility switches.
++        SGArtistUpdateDownloads(header);
++        return;
++    }
+     UIView *found[count];
+     SGFindIdentifiers(header, count, idents, keys, found);
+ 
+@@ -83,6 +87,7 @@
+             action.hidden = YES;
+         }
+     }
++    SGArtistUpdateDownloads(header);
+ }
+ 
+ static CGFloat bottomOf(UIView *v) {
+diff --git a/tweak/Sources/Native/Artist/ArtistDownloads.m b/tweak/Sources/Native/Artist/ArtistDownloads.m
+new file mode 100644
+--- /dev/null
++++ b/tweak/Sources/Native/Artist/ArtistDownloads.m
+@@ -0,0 +1,328 @@
++// Native artist downloads use a non-arranged control in Spotify's existing action row.
++// Spotify owns the row and its arranged views; none of those views are moved or hidden here.
++#import <objc/runtime.h>
++#import <objc/message.h>
++#import <dlfcn.h>
++#import "Core/SGCore.h"
++#import "Artist.h"
++#import "Shared/Navigation/TabIcons.h"
++
++static char kNativeArtistDownloadContext;
++static NSString *const kArtistMenuPrefix = @"Components.UI.ContextMenuButton-";
++static NSString *const kArtistPageIdentifier = @"creator-page";
++static NSString *const kShuffleIdentifier = @"Components.UI.ShuffleButton";
++static NSString *const kTitleIdentifier = @"Encore.AdaptiveTitle";
++typedef void (*SGArtistDownloadPresenter)(NSString *, NSString *, UIViewController *);
++
++static SGArtistDownloadPresenter downloadPresenter(void) {
++    static SGArtistDownloadPresenter show;
++    static dispatch_once_t once;
++    dispatch_once(&once, ^{ show = dlsym(RTLD_DEFAULT, "SAPShowArtistDownloads"); });
++    return show;
++}
++
++static NSCharacterSet *invalidArtistIdentifierCharacters(void) {
++    static NSCharacterSet *invalid;
++    static dispatch_once_t once;
++    dispatch_once(&once, ^{
++        invalid = [NSCharacterSet characterSetWithCharactersInString:
++            @"0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"].invertedSet;
++    });
++    return invalid;
++}
++
++static NSString *artistURI(NSString *value) {
++    NSString *prefix = @"spotify:artist:";
++    if (![value isKindOfClass:NSString.class] || ![value hasPrefix:prefix]) return nil;
++    NSString *identifier = [value substringFromIndex:prefix.length];
++    return identifier.length == 22 && [identifier rangeOfCharacterFromSet:invalidArtistIdentifierCharacters()].location == NSNotFound
++        ? value : nil;
++}
++
++static SEL pageURISelector(void) {
++    static SEL selector;
++    static dispatch_once_t once;
++    dispatch_once(&once, ^{ selector = NSSelectorFromString(@"spt_pageURI"); });
++    return selector;
++}
++
++// The page and presenter classes are stable across a layout pass. Cache only method metadata;
++// the page URI itself is read again when identity needs refreshing.
++static Method pageURIMethodForClass(Class cls) {
++    static NSMapTable<Class, id> *methods;
++    static dispatch_once_t once;
++    dispatch_once(&once, ^{
++        methods = [NSMapTable mapTableWithKeyOptions:NSPointerFunctionsStrongMemory | NSPointerFunctionsObjectPointerPersonality
++                                        valueOptions:NSPointerFunctionsStrongMemory];
++    });
++
++    @synchronized (methods) {
++        id cached = [methods objectForKey:cls];
++        if (cached) return (Method)[cached pointerValue];
++
++        SEL selector = pageURISelector();
++        Method method = class_getInstanceMethod(cls, selector);
++        char type[16] = {0};
++        BOOL valid = method && method_getNumberOfArguments(method) == 2;
++        if (valid) {
++            method_getReturnType(method, type, sizeof(type));
++            valid = type[0] == '@';
++        }
++        if (valid) [methods setObject:[NSValue valueWithPointer:method] forKey:cls];
++        return valid ? method : NULL;
++    }
++}
++
++@interface SGNativeArtistDownloadContext : NSObject
++@property(nonatomic, weak) UIView *header, *menu, *shuffle, *titleView, *row, *page;
++@property(nonatomic, weak) UIView *menuParent, *shuffleParent;
++@property(nonatomic, weak) UIView *constraintMenu, *constraintRow;
++@property(nonatomic, weak) UILabel *titleLabel;
++@property(nonatomic, weak) UIViewController *presenter, *uriResponder;
++@property(nonatomic, strong) UIButton *button;
++@property(nonatomic, copy) NSArray<NSLayoutConstraint *> *constraints;
++@property(nonatomic, copy) NSString *uri, *name, *menuIdentifier, *headerURI;
++- (void)open;
++@end
++
++static BOOL isDescendant(UIView *view, UIView *ancestor) {
++    return view && ancestor && view != ancestor && [view isDescendantOfView:ancestor];
++}
++
++static UIView *creatorPageForHeader(UIView *header, SGNativeArtistDownloadContext *context) {
++    UIView *cached = context.page;
++    if ([cached.accessibilityIdentifier isEqualToString:kArtistPageIdentifier] && isDescendant(header, cached)) {
++        for (UIView *view = header; view && view != cached; view = view.superview) {
++            if ([view.accessibilityIdentifier isEqualToString:kArtistPageIdentifier]) return view;
++        }
++        return cached;
++    }
++    for (UIView *view = header; view; view = view.superview) {
++        if ([view.accessibilityIdentifier isEqualToString:kArtistPageIdentifier]) return view;
++    }
++    return nil;
++}
++
++static BOOL isHorizontalActionRow(UIView *row, UIView *header, UIView *menu, UIView *shuffle) {
++    if (!row || row == header || !isDescendant(row, header) || !isDescendant(menu, row) || !isDescendant(shuffle, row)) return NO;
++    return ![row isKindOfClass:UIStackView.class] || ((UIStackView *)row).axis == UILayoutConstraintAxisHorizontal;
++}
++
++static UIView *commonActionRow(UIView *header, UIView *menu, UIView *shuffle) {
++    for (UIView *row = menu.superview; row && row != header; row = row.superview) {
++        if ([shuffle isDescendantOfView:row] && isHorizontalActionRow(row, header, menu, shuffle)) return row;
++    }
++    return nil;
++}
++
++static BOOL cachedAnchorsValid(SGNativeArtistDownloadContext *context, UIView *header) {
++    UIView *menu = context.menu, *shuffle = context.shuffle, *title = context.titleView;
++    UILabel *label = context.titleLabel;
++    if (context.header != header || !isDescendant(menu, header) || ![menu.accessibilityIdentifier hasPrefix:kArtistMenuPrefix] ||
++        !isDescendant(shuffle, header) || ![shuffle.accessibilityIdentifier isEqualToString:kShuffleIdentifier] ||
++        !isDescendant(title, header) || ![title.accessibilityIdentifier isEqualToString:kTitleIdentifier] ||
++        !(label == title || isDescendant(label, title)) ||
++        context.menuParent != menu.superview || context.shuffleParent != shuffle.superview) return NO;
++    if (!isHorizontalActionRow(context.row, header, menu, shuffle)) return NO;
++    return YES;
++}
++
++static void cacheAnchors(SGNativeArtistDownloadContext *context, UIView *header) {
++    __block UIView *menu = nil, *shuffle = nil, *title = nil;
++    __block UILabel *label = nil;
++    SGForEachView(header, ^(UIView *view) {
++        NSString *identifier = view.accessibilityIdentifier;
++        if (!menu && [identifier hasPrefix:kArtistMenuPrefix]) menu = view;
++        if (!shuffle && [identifier isEqualToString:kShuffleIdentifier]) shuffle = view;
++        if (!title && [identifier isEqualToString:kTitleIdentifier]) title = view;
++        if (title && !label && [view isKindOfClass:UILabel.class] && (view == title || isDescendant(view, title))) {
++            label = (UILabel *)view;
++        }
++    });
++
++    UIView *row = commonActionRow(header, menu, shuffle);
++    BOOL changedIdentitySource = context.menu != menu || ![context.menuIdentifier isEqualToString:menu.accessibilityIdentifier];
++    context.header = header;
++    context.menu = menu;
++    context.shuffle = shuffle;
++    context.menuParent = menu.superview;
++    context.shuffleParent = shuffle.superview;
++    context.titleView = title;
++    context.titleLabel = label;
++    context.row = row;
++    context.menuIdentifier = [menu.accessibilityIdentifier copy];
++    if (changedIdentitySource) {
++        context.headerURI = artistURI([context.menuIdentifier hasPrefix:kArtistMenuPrefix]
++            ? [@"spotify:artist:" stringByAppendingString:[context.menuIdentifier substringFromIndex:kArtistMenuPrefix.length]] : nil);
++        context.uriResponder = nil;
++    }
++}
++
++static NSString *freshPageURI(UIView *page, SGNativeArtistDownloadContext *context, UIViewController **presenterOut) {
++    NSString *pageURI = nil;
++    UIViewController *firstPresenter = nil;
++    UIViewController *uriPresenter = nil;
++    SEL selector = pageURISelector();
++
++    // Common case: the same page controller is still the first controller in the responder
++    // chain. Invoke its getter again (never reuse its URI), and fall back to the full walk if it
++    // stops yielding a valid artist URI or the chain changes.
++    if (context.uriResponder) {
++        UIResponder *firstResponder = page;
++        while (firstResponder && ![firstResponder isKindOfClass:UIViewController.class]) firstResponder = firstResponder.nextResponder;
++        if (firstResponder && firstResponder == context.uriResponder) {
++            Method method = pageURIMethodForClass(object_getClass(firstResponder));
++            if (method) {
++                id value = ((id (*)(id, SEL))objc_msgSend)(firstResponder, selector);
++                if ([value isKindOfClass:NSURL.class]) pageURI = artistURI([value absoluteString]);
++                if (pageURI) {
++                    uriPresenter = (UIViewController *)firstResponder;
++                    context.uriResponder = uriPresenter;
++                    if (presenterOut) *presenterOut = uriPresenter;
++                    return pageURI;
++                }
++            }
++        }
++    }
++
++    for (UIResponder *responder = page; responder; responder = responder.nextResponder) {
++        if (![responder isKindOfClass:UIViewController.class]) continue;
++        UIViewController *controller = (UIViewController *)responder;
++        if (!firstPresenter) firstPresenter = controller;
++        Method method = pageURIMethodForClass(object_getClass(responder));
++        if (!method) continue;
++        id value = ((id (*)(id, SEL))objc_msgSend)(responder, selector);
++        if (![value isKindOfClass:NSURL.class]) continue;
++        NSString *candidate = artistURI([value absoluteString]);
++        if (!candidate) continue;
++        pageURI = candidate;
++        uriPresenter = controller;
++        break;
++    }
++    context.uriResponder = uriPresenter;
++    if (presenterOut) *presenterOut = uriPresenter ?: firstPresenter;
++    return pageURI;
++}
++
++static void setUnavailable(SGNativeArtistDownloadContext *context) {
++    if (!context) return;
++    context.uri = nil;
++    if (!context.button.hidden) context.button.hidden = YES;
++    if (context.button.enabled) context.button.enabled = NO;
++}
++
++static void updateDownloads(UIView *header);
++
++@implementation SGNativeArtistDownloadContext
++- (void)open {
++    UIView *header = self.header;
++    if (!header) return;
++    updateDownloads(header);
++    if (!self.button.hidden && self.button.enabled && self.uri && self.presenter) {
++        SGArtistDownloadPresenter show = downloadPresenter();
++        if (show) show(self.uri, self.name ?: @"Artist", self.presenter);
++    }
++}
++@end
++
++static void updateDownloads(UIView *header) {
++    if (!header || !SGNativeUI()) return;
++    SGNativeArtistDownloadContext *context = objc_getAssociatedObject(header, &kNativeArtistDownloadContext);
++    UIView *page = creatorPageForHeader(header, context);
++    if (!page) {
++        setUnavailable(context);
++        if (context) context.page = nil;
++        return;
++    }
++
++    if (!context || !cachedAnchorsValid(context, header)) {
++        if (!context) {
++            context = [SGNativeArtistDownloadContext new];
++            context.header = header;
++            objc_setAssociatedObject(header, &kNativeArtistDownloadContext, context, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
++        }
++        cacheAnchors(context, header);
++    }
++
++    UIView *menu = context.menu, *shuffle = context.shuffle, *row = context.row;
++    NSString *menuIdentifier = menu.accessibilityIdentifier;
++    if (![context.menuIdentifier isEqualToString:menuIdentifier]) {
++        context.menuIdentifier = [menuIdentifier copy];
++        context.headerURI = artistURI([menuIdentifier hasPrefix:kArtistMenuPrefix]
++            ? [@"spotify:artist:" stringByAppendingString:[menuIdentifier substringFromIndex:kArtistMenuPrefix.length]] : nil);
++    }
++
++    if (!menu || !shuffle || !isHorizontalActionRow(row, header, menu, shuffle) || !downloadPresenter()) {
++        setUnavailable(context);
++        return;
++    }
++
++    // Read the page URI on every update, including layout passes. The view anchors and method
++    // metadata are cached, but a reused controller can change identity without changing views.
++    UIViewController *presenter = nil;
++    NSString *pageURI = freshPageURI(page, context, &presenter);
++    context.page = page;
++    context.presenter = presenter;
++
++    NSString *uri = pageURI && context.headerURI && ![pageURI isEqualToString:context.headerURI]
++        ? nil : pageURI ?: context.headerURI;
++    if (!uri || !presenter) {
++        setUnavailable(context);
++        return;
++    }
++
++    if (!context.button) {
++        UIButton *button = [UIButton buttonWithType:UIButtonTypeCustom];
++        UIColor *color = [UIColor colorWithWhite:1 alpha:0.7];
++        UIView *glyph = SGTabIconView(@"download", NO, color);
++        glyph.translatesAutoresizingMaskIntoConstraints = NO;
++        glyph.userInteractionEnabled = NO;
++        glyph.accessibilityElementsHidden = YES;
++        [button addSubview:glyph];
++        [NSLayoutConstraint activateConstraints:@[
++            [glyph.widthAnchor constraintEqualToConstant:24],
++            [glyph.heightAnchor constraintEqualToConstant:24],
++            [glyph.centerXAnchor constraintEqualToAnchor:button.centerXAnchor],
++            [glyph.centerYAnchor constraintEqualToAnchor:button.centerYAnchor]
++        ]];
++        button.tintColor = color;
++        button.translatesAutoresizingMaskIntoConstraints = NO;
++        button.accessibilityIdentifier = @"PixieNativeArtistDownload";
++        button.accessibilityLabel = @"Artist downloads";
++        [button addTarget:context action:@selector(open) forControlEvents:UIControlEventTouchUpInside];
++        context.button = button;
++    }
++
++    context.uri = uri;
++    context.presenter = presenter;
++    NSString *name = context.titleLabel.text;
++    if (![context.name isEqualToString:name]) context.name = name;
++    if (context.constraintRow != row || context.constraintMenu != menu || context.button.superview != row) {
++        [NSLayoutConstraint deactivateConstraints:context.constraints ?: @[]];
++        if (context.button.superview != row) {
++            [context.button removeFromSuperview];
++            [row addSubview:context.button];
++        }
++        context.menu = menu;
++        context.row = row;
++        context.constraintMenu = menu;
++        context.constraintRow = row;
++        context.constraints = @[
++            [context.button.leadingAnchor constraintEqualToAnchor:menu.trailingAnchor],
++            [context.button.centerYAnchor constraintEqualToAnchor:menu.centerYAnchor],
++            [context.button.widthAnchor constraintEqualToConstant:44],
++            [context.button.heightAnchor constraintEqualToConstant:44]
++        ];
++        [NSLayoutConstraint activateConstraints:context.constraints];
++    }
++
++    CGRect menuFrame = [menu convertRect:menu.bounds toView:row];
++    CGRect shuffleFrame = [shuffle convertRect:shuffle.bounds toView:row];
++    BOOL fits = CGRectGetWidth(menuFrame) > 0 && CGRectGetMaxX(menuFrame) + 44 <= CGRectGetMinX(shuffleFrame) + 0.5;
++    if (context.button.hidden == fits) context.button.hidden = !fits;
++    if (!context.button.enabled) context.button.enabled = YES;
++}
++
++void SGArtistUpdateDownloads(UIView *header) {
++    updateDownloads(header);
++}
 diff --git a/tweak/Sources/Redesigned/Album/AlbumHeader.x b/tweak/Sources/Redesigned/Album/AlbumHeader.x
-index 4b48da5..1bcf457 100644
 --- a/tweak/Sources/Redesigned/Album/AlbumHeader.x
 +++ b/tweak/Sources/Redesigned/Album/AlbumHeader.x
-@@ -475,9 +475,8 @@ static SGRHeaderInfo *applyInfo(UIView *header, UIView *page) {
+@@ -588,9 +588,8 @@
      UIView *play = floatingIn(page, @"header-play-button", &kPlayKey);
      UIView *shuffle = floatingIn(page, @"Components.UI.ShuffleButton", &kShuffleKey);
      UIView *add = SGRFindByIdentifier(header, @"Components.UI.AddToButton", &kAddKey);
@@ -381,11 +967,122 @@ index 4b48da5..1bcf457 100644
      // Only what the two floating buttons draw goes: a concealed layer still sends the actions the row fires.
      if (play) conceal(wrapperFor(play, page));
      if (shuffle) conceal(wrapperFor(shuffle, page));
+diff --git a/tweak/Sources/Redesigned/Artist/ArtistHeader.x b/tweak/Sources/Redesigned/Artist/ArtistHeader.x
+--- a/tweak/Sources/Redesigned/Artist/ArtistHeader.x
++++ b/tweak/Sources/Redesigned/Artist/ArtistHeader.x
+@@ -1,6 +1,7 @@
+ // Artist redesign: the header the playlist and album pages have. The photo runs full bleed across the top
+ // of the page and dissolves into the page's color; the name and the monthly listeners are centered on the
+-// bottom of that dissolve; and under them one row -- shuffle, a white Play capsule, and Follow.
++// bottom of that dissolve; and under them Shuffle, Download and Follow in a leading scroll group,
++// with the white Play capsule at the trailing edge.
+ //
+ // Tree (trees/clean/artist/01.txt:37-170). The header is TemplateKit's HeaderContainer, 568pt, the first view
+ // of the page's stack, holding an element view that holds the ImageHeaderView:
+@@ -27,6 +28,8 @@
+ // and fires Spotify's shuffle, play and Follow, Follow as a glyph from the collection (ArtistFollow.x). More stays in Spotify's row, where the row needs it (ArtistField.x), and the Kit's pinned ⋯
+ // (SGRPinnedMore) draws and fires it from the top trailing corner of the page, level with the back button.
+ #import <objc/runtime.h>
++#import <objc/message.h>
++#import <dlfcn.h>
+ #import "Core/SGCore.h"
+ #import "Redesigned/Kit/SGRKit.h"
+ #import "Shared/AnimatedArtwork/AnimatedArtwork.h"
+@@ -43,6 +46,71 @@
+ 
+ static char kInfoKey, kHeroKey, kHeroHeightKey, kContainerHeightKey, kRowWatchedKey, kSizeKey;
+ static char kTitleKey, kMetaKey, kShuffleKey, kPlayKey, kFollowKey, kArtworkKey, kBarKey, kMoreKey, kMoreButtonKey;
++static char kDownloadsKey;
++
++@interface SGRArtistDownloadsContext : NSObject
++@property (nonatomic, copy) NSString *uri, *name, *moreIdentifier;
++@property (nonatomic, weak) UIView *page;
++@property (nonatomic, weak) UIViewController *presenter;
++@property (nonatomic, copy) void (^action)(void);
++@end
++@implementation SGRArtistDownloadsContext @end
++
++static NSString *exactArtistURI(NSString *value) {
++    NSString *prefix = @"spotify:artist:";
++    if (![value isKindOfClass:NSString.class] || ![value hasPrefix:prefix]) return nil;
++    NSString *identifier = [value substringFromIndex:prefix.length];
++    NSCharacterSet *invalid = [NSCharacterSet characterSetWithCharactersInString:@"0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz"].invertedSet;
++    return identifier.length == 22 && [identifier rangeOfCharacterFromSet:invalid].location == NSNotFound ? value : nil;
++}
++
++// These are the same verified identity sources ArtistFollow.x uses: spt_pageURI
++// on the owning controller, or Components.UI.ContextMenuButton-<artist id> from
++// this header. No artist is inferred from its display name or the playing song.
++static void (^artistDownloads(SGRHeaderInfo *info, UIView *page, UIView *more, NSString *name))(void) {
++    static void (*show)(NSString *, NSString *, UIViewController *);
++    static dispatch_once_t once;
++    dispatch_once(&once, ^{ show = dlsym(RTLD_DEFAULT, "SAPShowArtistDownloads"); });
++    if (!show) return nil;
++    SGRArtistDownloadsContext *context = objc_getAssociatedObject(info, &kDownloadsKey);
++    if (!context) {
++        context = [SGRArtistDownloadsContext new];
++        __weak SGRArtistDownloadsContext *weakContext = context;
++        context.action = ^{
++            SGRArtistDownloadsContext *current = weakContext;
++            if (current.uri && current.presenter) show(current.uri, current.name ?: @"Artist", current.presenter);
++        };
++        objc_setAssociatedObject(info, &kDownloadsKey, context, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
++    }
++    context.name = name;
++    NSString *moreIdentifier = more.accessibilityIdentifier;
++    if (context.page != page || !context.uri || ![context.moreIdentifier ?: @"" isEqualToString:moreIdentifier ?: @""]) {
++        context.page = page;
++        context.moreIdentifier = moreIdentifier;
++        NSString *pageURI = nil;
++        UIViewController *presenter = nil;
++        for (UIResponder *responder = page; responder; responder = responder.nextResponder) {
++            if (![responder isKindOfClass:UIViewController.class]) continue;
++            if (!presenter) presenter = (UIViewController *)responder;
++            SEL selector = NSSelectorFromString(@"spt_pageURI");
++            Method method = class_getInstanceMethod(object_getClass(responder), selector);
++            char type[16] = {0};
++            if (!method || method_getNumberOfArguments(method) != 2) continue;
++            method_getReturnType(method, type, sizeof(type));
++            if (type[0] != '@') continue;
++            id value = ((id (*)(id, SEL))objc_msgSend)(responder, selector);
++            if ([value isKindOfClass:NSURL.class]) pageURI = exactArtistURI([value absoluteString]);
++            if (pageURI) { presenter = (UIViewController *)responder; break; }
++        }
++        NSString *prefix = @"Components.UI.ContextMenuButton-";
++        NSString *headerURI = [moreIdentifier hasPrefix:prefix]
++            ? exactArtistURI([@"spotify:artist:" stringByAppendingString:[moreIdentifier substringFromIndex:prefix.length]]) : nil;
++        // A reused header between two artists must settle before its action can run.
++        context.uri = pageURI && headerURI && ![pageURI isEqualToString:headerURI] ? nil : pageURI ?: headerURI;
++        context.presenter = presenter;
++    }
++    return context.uri && context.presenter ? context.action : nil;
++}
+ 
+ #pragma mark - Spotify's views
+ 
+@@ -332,13 +400,15 @@
+     UIView *shuffle = SGRFindByIdentifier(header, @"Components.UI.ShuffleButton", &kShuffleKey);
+     UIView *play = SGRFindByIdentifier(header, @"header-play-button", &kPlayKey);
+     UIView *follow = SGRFindByIdentifier(header, @"Curation.FollowButtonElementKit.FollowButton", &kFollowKey);
+-    [info showShuffle:shuffle play:play trailing:follow trailingFallback:nil playColor:fieldColor];
++    UIView *more = SGRFindByIdentifier(header, @"Components.UI.ContextMenuButton*", &kMoreKey);
++    UIView *page = SGRArtistPageOf(container);
++    [info showArtistShuffle:shuffle play:play follow:follow
++            downloadAction:artistDownloads(info, page, more, name) playColor:fieldColor];
+ 
+     // More, in the top trailing corner of the page itself rather than of the container, which scrolls away
+     // with the photo: pinned there it is the same button in the same place on the album and the playlist,
+     // and the page keeps it however far down the list one is (issue #57).
+-    UIView *more = SGRFindByIdentifier(header, @"Components.UI.ContextMenuButton*", &kMoreKey);
+-    SGRPinnedMore(SGRArtistPageOf(container), &kMoreButtonKey, more);
++    SGRPinnedMore(page, &kMoreButtonKey, more);
+ 
+     // The buttons arrive after the header has laid out, in a row that keeps its size and so lays nothing out
+     // again (Native/Artist/Artist.x): the row's own pass is watched, a plain UIStackView.
 diff --git a/tweak/Sources/Redesigned/Kit/SGRHeaderInfo.h b/tweak/Sources/Redesigned/Kit/SGRHeaderInfo.h
-index 0aa02f5..f25a087 100644
 --- a/tweak/Sources/Redesigned/Kit/SGRHeaderInfo.h
 +++ b/tweak/Sources/Redesigned/Kit/SGRHeaderInfo.h
-@@ -44,6 +44,10 @@ extern const CGFloat SGRHeaderInfoTitleRise;  // 56, of the content over the pic
+@@ -50,6 +50,14 @@
  // has no image to copy. `playColor` is the color of the capsule's glyph and word.
  - (void)showShuffle:(UIView *)shuffle play:(UIView *)play trailing:(UIView *)trailing
     trailingFallback:(UIImage *)trailingFallback playColor:(UIColor *)playColor;
@@ -393,28 +1090,86 @@ index 0aa02f5..f25a087 100644
 +// and add controls at the leading edge. Narrow widths scroll only that group.
 +- (void)showAlbumShuffle:(UIView *)shuffle play:(UIView *)play download:(UIView *)download
 +                    add:(UIView *)add playColor:(UIColor *)playColor;
++// Artist row: Spotify's shuffle, then the custom release picker and Follow in
++// the leading scroll group, with Spotify's Play at the trailing edge.
++- (void)showArtistShuffle:(UIView *)shuffle play:(UIView *)play follow:(UIView *)follow
++          downloadAction:(void (^)(void))downloadAction playColor:(UIColor *)playColor;
  // A picture drawn in the title's place, such as an artist's logo; the title stays its spoken name. nil
  // draws the title again.
  - (void)showTitleImage:(UIImage *)image;
 diff --git a/tweak/Sources/Redesigned/Kit/SGRHeaderInfo.m b/tweak/Sources/Redesigned/Kit/SGRHeaderInfo.m
-index b62b752..7258401 100644
 --- a/tweak/Sources/Redesigned/Kit/SGRHeaderInfo.m
 +++ b/tweak/Sources/Redesigned/Kit/SGRHeaderInfo.m
-@@ -62,6 +62,8 @@ UIImageView *SGRCreatorPicture(UIView *root) {
+@@ -3,6 +3,7 @@
+ #import "Core/SGCore.h"
+ #import "SGRHeaderInfo.h"
+ #import "SGRActionRow.h"
++#import "SGRGlass.h"
+ #import "SGRRestyle.h"
+ #import "SGRTokens.h"
+ 
+@@ -45,6 +46,40 @@
+ 
+ // A face is at least this wide, and square give or take a point.
+ static const CGFloat kMinFace = 16;
++
++@interface SGRArtistDownloadButton : UIControl
++@property (nonatomic, copy) void (^action)(void);
++@end
++
++@implementation SGRArtistDownloadButton {
++    UIImageView *_glyph;
++}
++- (instancetype)initWithFrame:(CGRect)frame {
++    if (!(self = [super initWithFrame:frame])) return nil;
++    _glyph = [[UIImageView alloc] initWithImage:[UIImage systemImageNamed:@"arrow.down"]];
++    _glyph.contentMode = UIViewContentModeScaleAspectFit;
++    _glyph.tintColor = SGRPrimary();
++    _glyph.userInteractionEnabled = NO;
++    [self addSubview:_glyph];
++    self.isAccessibilityElement = YES;
++    self.accessibilityTraits = UIAccessibilityTraitButton;
++    self.accessibilityLabel = @"Download";
++    self.accessibilityIdentifier = @"Vitrine.Artist.Download";
++    [self addTarget:self action:@selector(sgr_down) forControlEvents:UIControlEventTouchDown];
++    [self addTarget:self action:@selector(sgr_up) forControlEvents:UIControlEventTouchUpInside | UIControlEventTouchUpOutside | UIControlEventTouchCancel];
++    [self addTarget:self action:@selector(sgr_tap) forControlEvents:UIControlEventTouchUpInside];
++    return self;
++}
++- (void)layoutSubviews {
++    [super layoutSubviews];
++    static char glassKey;
++    SGRGlassInside(self, &glassKey, SGRGlassCircleSize);
++    _glyph.frame = CGRectMake(round((self.bounds.size.width - 24) / 2), round((self.bounds.size.height - 24) / 2), 24, 24);
++}
++- (void)sgr_down { SGRAnimate(SGRMotionPress, ^{ self.transform = CGAffineTransformMakeScale(0.92, 0.92); }, nil); }
++- (void)sgr_up { SGRAnimate(SGRMotionPress, ^{ self.transform = CGAffineTransformIdentity; }, nil); }
++- (void)sgr_tap { if (self.action) self.action(); }
++@end
+ 
+ UIImageView *SGRCreatorPicture(UIView *root) {
+     if (!root) return nil;
+@@ -69,6 +104,10 @@
      UIImage *_titleImage;   // what the title's place is laid out for; the logo keeps its picture while it fades out
      SGRMirrorButton *_shuffle, *_trailing;
      SGRPlayCapsule *_play;
 +    UIScrollView *_albumControls;
 +    SGRMirrorButton *_albumDownload;
++    SGRArtistDownloadButton *_artistDownload;
++    BOOL _artistActionRow;
      __weak UIView *_creatorLink;
- }
+     // contentHeightForWidth:'s last answer, for _measuredWidth; a negative width is none. Cleared when the text or
+     // the title picture changes, the only things it measures.
+@@ -273,6 +312,53 @@
  
-@@ -260,6 +262,34 @@ UIImageView *SGRCreatorPicture(UIView *root) {
+ - (void)trailingStateChanged {
      if (_trailing.source) [_trailing feedFrom:_trailing.source];
- }
- 
++}
++
 +- (void)showAlbumShuffle:(UIView *)shuffle play:(UIView *)play download:(UIView *)download
 +                    add:(UIView *)add playColor:(UIColor *)playColor {
++    _artistActionRow = NO;
++    _artistDownload.hidden = YES;
 +    if (!_albumControls) {
 +        _albumControls = [UIScrollView new];
 +        _albumControls.showsHorizontalScrollIndicator = NO;
@@ -441,10 +1196,25 @@ index b62b752..7258401 100644
 +    }
 +}
 +
++- (void)showArtistShuffle:(UIView *)shuffle play:(UIView *)play follow:(UIView *)follow
++          downloadAction:(void (^)(void))downloadAction playColor:(UIColor *)playColor {
++    [self showAlbumShuffle:shuffle play:play download:nil add:follow playColor:playColor];
++    _artistActionRow = YES;
++    _albumControls.accessibilityIdentifier = @"Vitrine.Artist.Actions";
++    _shuffle.accessibilityIdentifier = @"Vitrine.Artist.Shuffle";
++    _trailing.accessibilityIdentifier = @"Vitrine.Artist.Follow";
++    _play.accessibilityIdentifier = @"Vitrine.Artist.Play";
++    if (!_artistDownload) {
++        _artistDownload = [[SGRArtistDownloadButton alloc] initWithFrame:CGRectZero];
++        [_albumControls addSubview:_artistDownload];
++    }
++    _artistDownload.action = downloadAction;
++    _artistDownload.hidden = downloadAction == nil;
++    [self setNeedsLayout];
+ }
+ 
  - (CGFloat)contentHeightForWidth:(CGFloat)width {
-     CGFloat text = MAX(0, width - 2 * kSide), height = 0;
-     UILabel *previous = nil;
-@@ -312,6 +342,27 @@ UIImageView *SGRCreatorPicture(UIView *root) {
+@@ -330,6 +416,28 @@
      }
      if (previous) y += kRowAbove;
  
@@ -457,7 +1227,8 @@ index b62b752..7258401 100644
 +        CGFloat groupWidth = MAX(0, text - playWidth - kRowSpacing);
 +        _albumControls.frame = CGRectMake(rtl ? CGRectGetMaxX(_play.frame) + kRowSpacing : kSide, y, groupWidth, side);
 +        CGFloat x = 0;
-+        for (UIView *button in @[_shuffle, _albumDownload, _trailing]) {
++        NSArray<UIView *> *leading = _artistActionRow ? @[_shuffle, _artistDownload, _trailing] : @[_shuffle, _albumDownload, _trailing];
++        for (UIView *button in leading) {
 +            if (button.hidden) continue;
 +            button.frame = CGRectMake(x, 0, side, side);
 +            x += side + 12;
@@ -472,7 +1243,7 @@ index b62b752..7258401 100644
      // Play on the middle of the page, the other two hung off its sides, so it holds its place whether both
      // are there or not.
      CGFloat side = SGRActionHeight;
-@@ -321,7 +372,8 @@ UIImageView *SGRCreatorPicture(UIView *root) {
+@@ -339,7 +447,8 @@
      _play.frame = play;
      _shuffle.frame = CGRectMake(CGRectGetMinX(play) - kRowSpacing - side, y, side, side);
      _trailing.frame = CGRectMake(CGRectGetMaxX(play) + kRowSpacing, y, side, side);
@@ -483,10 +1254,9 @@ index b62b752..7258401 100644
      if (!_about.hidden) {
          y += kAboutAbove;
 diff --git a/tweak/Sources/Redesigned/Playlist/PlaylistHeader.x b/tweak/Sources/Redesigned/Playlist/PlaylistHeader.x
-index aab2438..4d48937 100644
 --- a/tweak/Sources/Redesigned/Playlist/PlaylistHeader.x
 +++ b/tweak/Sources/Redesigned/Playlist/PlaylistHeader.x
-@@ -43,6 +43,7 @@ static const CGFloat kMinHero = 120, kMinCover = 80;
+@@ -43,6 +43,7 @@
  static char kCoverKey, kMetaKey, kPlayKey, kLayoutKey, kToolbarKey, kScrimKey, kBarScrimKey;
  static char kShuffleKey, kAddKey, kDownloadKey, kPlainDownloadKey, kInfoKey, kBlockHeightKey, kBlockWatchedKey;
  static char kHeroKey, kHeroHeightKey, kRestPlaneKey, kRowKey, kRowWatchedKey, kMoreKey, kCreatorKey, kPinnedMoreKey, kSortKey, kTitleKey;
@@ -494,7 +1264,7 @@ index aab2438..4d48937 100644
  
  #pragma mark - finding things
  
-@@ -314,19 +315,6 @@ static NSString *lengthIn(UIView *block) {
+@@ -325,19 +326,6 @@
      return firstText(SGRFindByIdentifier(block, @"Components.Header.UI.Metadata", &kMetaKey), nil);
  }
  
@@ -514,7 +1284,7 @@ index aab2438..4d48937 100644
  // The header of the songs the user liked by one artist: the playlist page's kit with no playlist behind it.
  static BOOL isCollectionArtist(UIView *root) {
      return [NSStringFromClass(SGRPlaylistHeaderOf(root).class) hasSuffix:@"CollectionArtistHeaderViewController"];
-@@ -342,9 +330,7 @@ static NSString *artistTitle(UIView *block) {
+@@ -353,9 +341,7 @@
  }
  
  // What the playlist's header shows: the name and the description from the page's model, the creator and the
@@ -525,7 +1295,7 @@ index aab2438..4d48937 100644
  static void showPlaylist(SGRHeaderInfo *info, UIView *block, UIView *root, id model) {
      BOOL artistPage = isCollectionArtist(root);
      NSString *title = modelString(model, @"playlistName") ?: (artistPage ? artistTitle(block) : firstText(block, nil));
-@@ -359,10 +345,18 @@ static void showPlaylist(SGRHeaderInfo *info, UIView *block, UIView *root, id mo
+@@ -370,10 +356,18 @@
      // The Granular button of the playlist pages, or the plain one the songs liked by one artist have.
      UIView *download = SGRFindByIdentifier(block, @"DownloadButton.Granular*", &kDownloadKey)
          ?: SGRFindByIdentifier(block, @"Components.UI.DownloadButton", &kPlainDownloadKey);
@@ -549,37 +1319,28 @@ index aab2438..4d48937 100644
      conceal(play);
  
 diff --git a/tweak/Sources/Shared/LocalFiles/LocalCover.m b/tweak/Sources/Shared/LocalFiles/LocalCover.m
-index 19130ed..1e6c5a9 100644
 --- a/tweak/Sources/Shared/LocalFiles/LocalCover.m
 +++ b/tweak/Sources/Shared/LocalFiles/LocalCover.m
-@@ -6,7 +6,6 @@
- // Threading: main thread. A picture found is kept per track; a miss is tried again after a second, since
- // the now playing info may not have caught up with the track yet.
- #import <MediaPlayer/MediaPlayer.h>
--#import <objc/message.h>
- #import "Core/SGCore.h"
- #import "Headers/SPTPlayer.h"
- #import "Shared/Player/PlayerState.h"
-@@ -19,18 +18,21 @@ static const CGFloat kSide = 1200;
+@@ -18,18 +18,23 @@
  static NSMutableDictionary<NSString *, UIImage *> *sg_found;
  static NSMutableDictionary<NSString *, NSDate *> *sg_missed;
  
--// A file URL, an absolute path, or Spotify's own reading of a value (-[NSURL spt_localFileImagePath],
--// asked only when the object answers it as a getter of an object).
+-// A file URL, an absolute path, or a spotify:localfileimage:<percent-encoded path> address. Spotify's
+-// -[NSURL spt_localFileImagePath] reads the same part but throws on an address with fewer parts (#157).
 +// Only local paths and Spotify's local-image URI carry a file to read. In 9.1.90,
 +// spt_localFileImagePath blindly indexes spotifyURIComponents[2]; NSURL answering
 +// that selector does not make an arbitrary metadata URL safe to pass to it.
 +// Decode the known URI here, without entering that unchecked Spotify parser.
  static NSString *pathIn(id value) {
-     if ([value isKindOfClass:NSString.class] && [value hasPrefix:@"/"]) return value;
-     NSURL *url = [value isKindOfClass:NSURL.class] ? value : [value isKindOfClass:NSString.class] ? [NSURL URLWithString:value] : nil;
+     NSString *string = [value isKindOfClass:NSURL.class] ? [value absoluteString] : value;
+     if (![string isKindOfClass:NSString.class]) return nil;
+     if ([string hasPrefix:@"/"]) return string;
+     NSURL *url = [NSURL URLWithString:string];
      if (url.isFileURL) return url.path;
--    SEL getter = NSSelectorFromString(@"spt_localFileImagePath");
--    if (![url respondsToSelector:getter]) return nil;
--    NSMethodSignature *signature = [url methodSignatureForSelector:getter];
--    if (signature.numberOfArguments != 2 || signature.methodReturnType[0] != '@') return nil;
--    id path = ((id (*)(id, SEL))objc_msgSend)(url, getter);
--    return [path isKindOfClass:NSString.class] && [path length] ? path : nil;
+-    NSArray<NSString *> *parts = [string componentsSeparatedByString:@":"];
+-    if (parts.count < 3 || ![parts[0] isEqualToString:@"spotify"] || ![parts[1] isEqualToString:@"localfileimage"]) return nil;
+-    NSString *path = parts[2].stringByRemovingPercentEncoding;
+-    return path.length ? path : nil;
 +    NSString *prefix = @"spotify:localfileimage:", *address = url.absoluteString;
 +    if (![address hasPrefix:prefix]) return nil;
 +    NSString *encoded = [address substringFromIndex:prefix.length];

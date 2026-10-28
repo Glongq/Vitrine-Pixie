@@ -1,0 +1,150 @@
+{
+  "id": "vitrine-b16-spotify-9.1.90-pixie-1.3",
+  "spotify_version": "9.1.90",
+  "spotify_build": "919002269",
+  "uuid": "fbce22c17e1b3e0d9be866ff9291943e",
+  "pixie_version": "1.3",
+  "minimum_ios": "15.0",
+  "preferred_address": "0x100000000",
+  "native": {
+    "setter": "0x101d1debc",
+    "setter_cave": "0x100023f00",
+    "setter_original": "e6031eaa8f3ef495fe0306aafd7b11a9",
+    "manager_vtable": "0x10ca326c8",
+    "window": "0x103594f54",
+    "call_site": "0x103594f60",
+    "window_original": "e4e30191e5c30091e00317aa2200805220013fd6a18301d1",
+    "provider": "0x1083de7b0",
+    "provider_head": "ff0306d1fc6f12a9fa6713a9f85f14a9f65715a9f44f16a9fd7b17a9fdc30591f50305aaf40300aaf70308aa08404239",
+    "mapping": "0x1083de894",
+    "mapping_original": "f60301aa5f080071480080520815881a5f0000711c159f1a",
+    "selector_cave": "0x100023d00",
+    "dlsym_stub": "0x109b65b68",
+    "dlsym_stub_head": "70840190106a42f900021fd6",
+    "render_callback": "0x1076b9e2c"
+  },
+  "groups": {
+    "transport": [
+      "Spotify/SpotifyTransportRegistry.m",
+      "Spotify/SpotifyTransportHooks.m",
+      "Spotify/SpotifyServiceCalls.m",
+      "Spotify/SpotifyCommands.m"
+    ],
+    "manual_download": [
+      "Downloads/ManualTrackDownload.m",
+      "@transport"
+    ],
+    "artist_session": [
+      "Downloads/ArtistDownloadSession.m",
+      "Downloads/ArtistSessionOwnership.m",
+      "Downloads/ArtistSessionState.m",
+      "Downloads/ArtistSessionObservation.m",
+      "Downloads/ArtistSessionScheduler.m",
+      "Downloads/ArtistSessionCancellation.m",
+      "Downloads/ReleaseDownloadOperation.m"
+    ],
+    "playlists": [
+      "Playlists/PlaylistTaskRegistry.m",
+      "Playlists/PlaylistRepository.m",
+      "Playlists/PlaylistDownloadTask.m",
+      "Playlists/IncrementalPlaylistTask.m",
+      "Playlists/ReleaseItemObservation.m"
+    ],
+    "journal": [
+      "Diagnostics/TrackJournal.m",
+      "Diagnostics/JournalFormatting.m",
+      "Diagnostics/JournalWriter.m",
+      "Diagnostics/JournalWireDecoder.m",
+      "Diagnostics/JournalObservation.m"
+    ],
+    "artist_ui": [
+      "UI/ArtistDownloadsUI.m",
+      "Artwork/ArtistArtworkLoader.m",
+      "UI/ArtistDownloadComponents.m",
+      "UI/PlaylistPickerController.m"
+    ]
+  },
+  "companion_sources": [
+    "Diagnostics/AudioProbe.c",
+    "Diagnostics/DiagnosticsPreferences.m",
+    "UI/Localization.m",
+    "Diagnostics/AVAudioHooks.m",
+    "Diagnostics/SourceGraph.c",
+    "Spotify/OfflineFlags.m",
+    "Spotify/WireProto.m",
+    "Spotify/OfflineConfig.m",
+    "Diagnostics/TrackJournal.m",
+    "Diagnostics/NativeErrorLog.m",
+    "Diagnostics/PlayerTrace.m",
+    "Spotify/NativeOfflineAdapter.m",
+    "Spotify/NativeAlbumCommand.m",
+    "Downloads/ManualTrackDownload.m",
+    "UI/PixieManagerActions.m",
+    "UI/PixieManagerSettings.m",
+    "Diagnostics/EncodedAudio.m",
+    "Catalog/AlbumMetadata.m",
+    "Catalog/ArtistMetadata.m",
+    "Downloads/ArtistDownloadSession.m",
+    "UI/ArtistDownloadsUI.m",
+    "Playlists/PlaylistTaskRegistry.m",
+    "Diagnostics/SupportLogSerializer.m",
+    "Devices/OfflineCompatibilityChecks.m",
+    "Devices/OfflineDeviceManager.m",
+    "Diagnostics/DiagnosticTrace.m",
+    "Diagnostics/TracePlatform.m",
+    "Diagnostics/NativeKeyTrace.m",
+    "Runtime/PixieBootstrap.m",
+    "Diagnostics/JournalFormatting.m",
+    "Artwork/ArtistArtworkLoader.m",
+    "UI/ArtistDownloadComponents.m",
+    "UI/PlaylistPickerController.m",
+    "Spotify/SpotifyTransportRegistry.m",
+    "Spotify/SpotifyTransportHooks.m",
+    "Spotify/SpotifyServiceCalls.m",
+    "Spotify/SpotifyCommands.m",
+    "Downloads/ArtistSessionOwnership.m",
+    "Downloads/ArtistSessionState.m",
+    "Downloads/ArtistSessionObservation.m",
+    "Downloads/ArtistSessionScheduler.m",
+    "Downloads/ArtistSessionCancellation.m",
+    "Downloads/ReleaseDownloadOperation.m",
+    "Diagnostics/SupportLogExporter.m",
+    "Playlists/PlaylistRepository.m",
+    "Playlists/PlaylistDownloadTask.m",
+    "Playlists/IncrementalPlaylistTask.m",
+    "Playlists/ReleaseItemObservation.m",
+    "Diagnostics/JournalWriter.m",
+    "Diagnostics/JournalWireDecoder.m",
+    "Diagnostics/JournalObservation.m"
+  ],
+  "supported_packaging": [
+    "ipa-companion"
+  ],
+  "unsupported_packaging": [
+    "jailbreak-deb"
+  ],
+  "trace_points": [
+    {
+      "name": "Request",
+      "address": "0x103594f60",
+      "cave": "0x100023700",
+      "original": "02008052",
+      "kind": 0
+    },
+    {
+      "name": "Success",
+      "address": "0x106231e70",
+      "cave": "0x100023900",
+      "original": "ff4301d1f44f03a9fd7b04a9fd030191",
+      "kind": 1
+    },
+    {
+      "name": "Failure",
+      "address": "0x100893730",
+      "cave": "0x100023b00",
+      "original": "ff4301d1f44f03a9fd7b04a9fd030191",
+      "kind": 2
+    }
+  ],
+  "vitrine_version": "1.0.0-beta.16"
+}

@@ -1,0 +1,66 @@
+name: Pixie 1.3 — Vitrine b16 / Spotify 9.1.90
+
+on:
+  push:
+    paths: ['NativeDownloads/**', 'vitrine-upstream/tweak/Sources/**', 'Makefile', '.github/workflows/native-downloads.yml']
+  pull_request:
+    paths: ['NativeDownloads/**', 'vitrine-upstream/tweak/Sources/**', 'Makefile', '.github/workflows/native-downloads.yml']
+  workflow_dispatch:
+    inputs:
+      ipa_url:
+        description: 'Optional HTTPS URL to the compatible Vitrine b16 / Spotify 9.1.90 / Vitrine beta 16 IPA'
+        required: false
+        default: ''
+        type: string
+      vitrine_dylib_url:
+        description: 'HTTPS URL of spotifyglass.dylib rebuilt from these sources; required for packaging'
+        required: false
+        default: ''
+        type: string
+
+permissions:
+  contents: read
+
+jobs:
+  validate:
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - run: python3 NativeDownloads/tools/validate_vitrine_9190.py
+      - run: python3 NativeDownloads/tools/test.py --build-dir outputs/ci-host-tests
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: pixie-host-test-results
+          path: outputs/ci-host-tests
+          retention-days: 7
+
+  package:
+    if: github.event_name == 'workflow_dispatch' && inputs.ipa_url != ''
+    needs: validate
+    runs-on: macos-15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Fetch supplied artifacts and package
+        env:
+          SOURCE_IPA_URL: ${{ inputs.ipa_url }}
+          VITRINE_DYLIB_URL: ${{ inputs.vitrine_dylib_url }}
+        run: |
+          case "$SOURCE_IPA_URL" in https://*) ;; *) exit 1 ;; esac
+          case "$VITRINE_DYLIB_URL" in https://*) ;; *) echo 'A current Vitrine library is required'; exit 1 ;; esac
+          curl --proto '=https' --proto-redir '=https' --location --fail "$SOURCE_IPA_URL" --output "$RUNNER_TEMP/source.ipa"
+          curl --proto '=https' --proto-redir '=https' --location --fail "$VITRINE_DYLIB_URL" --output "$RUNNER_TEMP/spotifyglass.dylib"
+          mkdir -p outputs/ci-package
+          python3 NativeDownloads/tools/build_vitrine_9190.py "$RUNNER_TEMP/source.ipa" --vitrine-dylib "$RUNNER_TEMP/spotifyglass.dylib" --output outputs/ci-package/Spotify-9.1.90-Vitrine-b16-Pixie-v1.3.ipa > outputs/ci-package/build-report.json
+      - uses: actions/upload-artifact@v4
+        with:
+          name: vitrine-b16-9190-pixie-1.3
+          path: outputs/ci-package
+          if-no-files-found: error
+          retention-days: 7
