@@ -29,6 +29,11 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: '3.12'
+      - name: Install ffmpeg for the M4A codec test
+        run: brew install ffmpeg
+        env:
+          HOMEBREW_NO_AUTO_UPDATE: '1'
+          HOMEBREW_NO_INSTALL_CLEANUP: '1'
       - run: python3 NativeDownloads/tools/validate_vitrine_9190.py
       - run: python3 NativeDownloads/tools/test.py --build-dir outputs/ci-host-tests
       - uses: actions/upload-artifact@v4

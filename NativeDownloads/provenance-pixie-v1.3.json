@@ -6,7 +6,7 @@
   "vitrine_version": "1.0.0-beta.16",
   "pixie_version": "1.4",
   "source_sha256_by_file": {
-    ".github/workflows/native-downloads.yml": "0531083f6727a1a9154f672bf6e29f0b2945a5a3a893efa72f7b1dee23cedcb0",
+    ".github/workflows/native-downloads.yml": "7b8bc17fe93cafa869e9a5d40d6f0e1c24bd869c532458a93a7a7f127ab2bd06",
     "BUILD-pixie-v1.3.md": "4519256e6489fb241c54e32ece6974c6ff1156587680eed82e7d5ef72b6b39e1",
     "Makefile": "a19a5058422ddd804df20f7f7b42f9482c47cc7adda43ec765da3ca2410814bb",
     "NativeDownloads/src/Artwork/ArtistArtworkLoader.h": "7e73d32567a32308c3b9840226ee464bd023372af5da98789512a349a32ad762",
