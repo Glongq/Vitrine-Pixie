@@ -101,13 +101,11 @@ int main(void) { @autoreleasepool {
         AVAudioPCMBuffer *buffer = pcm(layout);
         CMSampleBufferRef input = sample(buffer); lastOriginal = input;
         expected = 0.5f; [renderer enqueueSampleBuffer:input];
-        assert(SpotifyAudioProbeMuteForSeconds(2));
-        expected = 0; [renderer enqueueSampleBuffer:input];
-        SpotifyAudioProbeMuteForSeconds(0);
-        expected = 0.5f; [renderer enqueueSampleBuffer:input]; // original wasn't altered
         SpotifyAudioProbeSetObserver(scale); expected = 0.25f;
         [renderer enqueueSampleBuffer:input];
-        SpotifyAudioProbeSetObserver(NULL); CFRelease(input);
+        SpotifyAudioProbeSetObserver(NULL); expected = 0.5f;
+        [renderer enqueueSampleBuffer:input]; // observer copy left the original unchanged
+        CFRelease(input);
     }
     AVAudioPlayerNode *player = [AVAudioPlayerNode new]; originalPlayer = pcm(NO);
     expectedTime = [AVAudioTime timeWithSampleTime:512 atRate:48000];
@@ -128,8 +126,8 @@ int main(void) { @autoreleasepool {
     SpotifyAudioProbeSetObserver(NULL);
     CFRelease(encodedSample); CFRelease(encoded); CFRelease(compressedFormat);
     SAPSnapshot s; SpotifyAudioProbeReadSnapshot(&s);
-    assert(s.objcHooks == 5 && s.sampleBufferCalls == 9 && s.playerBufferCalls == 2 && s.callbacks == 10);
-    assert(sinkCalls == 11 && s.compressedBuffers == 1 && completions == 2 && s.extractionErrors == 0);
+    assert(s.objcHooks == 5 && s.sampleBufferCalls == 7 && s.playerBufferCalls == 2 && s.callbacks == 8);
+    assert(sinkCalls == 9 && s.compressedBuffers == 1 && completions == 2 && s.extractionErrors == 0);
     // A chained original may reenter and throw. Catching that exception must
     // leave subsequent calls on this thread eligible for Pixie processing.
     AVAudioPCMBuffer *recoveryPCM = pcm(NO);
@@ -143,7 +141,7 @@ int main(void) { @autoreleasepool {
     assert(exceptionObserved && enqueueExceptionCalls == 2);
     [renderer enqueueSampleBuffer:recoverySample];
     SpotifyAudioProbeReadSnapshot(&s);
-    assert(s.sampleBufferCalls == callsBeforeException + 2 && sinkCalls == 12);
+    assert(s.sampleBufferCalls == callsBeforeException + 2 && sinkCalls == 10);
     CFRelease(recoverySample);
     puts("PASS: nested original enqueue exception propagates; later buffers still reach Pixie processing");
     printf("PASS: actual Objective-C method interception; CoreMedia interleaved/planar PCM; passthrough identity; independent mutable copies; unchanged originals; metadata/timing; nested scheduling and completions. AV hooks=%u calls=%llu/%llu\n", s.objcHooks, s.sampleBufferCalls, s.playerBufferCalls);

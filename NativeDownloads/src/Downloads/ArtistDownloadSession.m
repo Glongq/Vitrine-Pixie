@@ -7,6 +7,8 @@ double SAPArtistRecoverySettleSeconds=2;
 void SAPArtistSessionSetRecoverySettleForTesting(double seconds){SAPArtistRecoverySettleSeconds=seconds;}
 void SAPArtistSessionSetWorkTimeoutForTesting(double seconds){SAPArtistWorkTimeoutSeconds=seconds;}
 void SAPArtistSessionSetRepairTimeoutForTesting(double seconds){SAPArtistRepairTimeoutSeconds=seconds;}
+BOOL SAPArtistDirectAlbumSubmission=YES;
+void SAPArtistSessionSetDirectAlbumSubmissionForTesting(BOOL enabled){SAPArtistDirectAlbumSubmission=enabled;}
 #else
 const double SAPArtistWorkTimeoutSeconds=900;
 const double SAPArtistRepairTimeoutSeconds=30;

@@ -225,6 +225,7 @@ void SAPJournalObserveCall(NSString *method, NSData *request, NSData *response, 
     if(!SAPDiagnosticsEnabled())return;
     if (![method isKindOfClass:NSString.class] || method.length > 64) return;
     if (response && ![response isKindOfClass:NSData.class]) return;
+    if(!SAPTraceRepeatedProgressPayload(@"observation",method,SAPTraceCurrentOperation(),response))
     SAP_TRACE("offline_observation","response_decoded_at_journal_boundary",SAPTraceCurrentOperation(),@{@"method":method,@"source":source?:@"unknown",
         @"response":SAPTraceWireSummary(@"spotify.offline_esperanto.proto.Offline",method,response,YES),@"rpc_parent_link":SAPTraceCurrentOperation()?@"callback_context":@"unavailable"});
     NSString *copiedMethod = [method copy], *copiedSource = [source copy];

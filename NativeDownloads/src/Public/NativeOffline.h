@@ -7,6 +7,8 @@ void SAPSetKeyRequestMode(NSInteger mode, void (^completion)(BOOL changed, NSStr
 void SAPReadNativeOfflineQuota(void (^completion)(NSDictionary *));
 void SAPPrepareNativeOffline(BOOL (^stillRequested)(void), void (^completion)(BOOL, NSString *));
 BOOL SAPSubmitNativeAlbumDownload(NSString *albumURI,NSArray<NSString *> *trackURIs,NSString **reason);
+// User-confirmed export refresh only. Return means invocation, not completion.
+BOOL SAPResetNativeEntityDownload(NSString *uri,NSString **reason);
 NSDictionary *SAPNativeOfflineReport(void);
 void SAPSampleNativeOffline(void);
 void SAPReadNativeTrackState(NSString *uri);

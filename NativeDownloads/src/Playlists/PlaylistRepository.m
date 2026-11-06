@@ -101,4 +101,13 @@ dispatch_block_t SAPPlaylistReadListFrom(NSString *uri,NSUInteger start,void (^c
 }
 dispatch_block_t SAPPlaylistReadList(NSString *uri,void (^completion)(id,NSString *)){return SAPPlaylistReadListFrom(uri,0,completion);}
 dispatch_block_t SAPFetchWritablePlaylists(void (^completion)(NSArray *,NSString *)) {return SAPPlaylistReadList(nil,completion);}
+dispatch_block_t SAPFetchPlaylistContents(NSString *uri,void (^completion)(NSDictionary *,NSString *)) {
+    if(!completion)return ^{};
+    NSString *prefix=@"spotify:playlist:";
+    NSCharacterSet *invalid=[NSCharacterSet characterSetWithCharactersInString:@"0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"].invertedSet;
+    if(![uri isKindOfClass:NSString.class]||![uri hasPrefix:prefix]||uri.length!=prefix.length+22||[[uri substringFromIndex:prefix.length]rangeOfCharacterFromSet:invalid].location!=NSNotFound) {
+        __block BOOL cancelled=NO;dispatch_async(dispatch_get_main_queue(),^{if(!cancelled)completion(nil,@"Invalid playlist identity.");});return ^{cancelled=YES;};
+    }
+    return SAPPlaylistReadList(uri,^(id value,NSString *error){completion([value isKindOfClass:NSDictionary.class]?value:nil,error);});
+}
 

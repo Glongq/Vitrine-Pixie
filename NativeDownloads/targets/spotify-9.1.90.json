@@ -1,9 +1,9 @@
 {
-  "id": "vitrine-b16-spotify-9.1.90-pixie-1.3",
+  "id": "vitrine-b16-spotify-9.1.90-pixie-1.4",
   "spotify_version": "9.1.90",
   "spotify_build": "919002269",
   "uuid": "fbce22c17e1b3e0d9be866ff9291943e",
-  "pixie_version": "1.3",
+  "pixie_version": "1.4",
   "minimum_ios": "15.0",
   "preferred_address": "0x100000000",
   "native": {
@@ -62,6 +62,46 @@
       "Artwork/ArtistArtworkLoader.m",
       "UI/ArtistDownloadComponents.m",
       "UI/PlaylistPickerController.m"
+    ],
+    "audio_export": [
+      "Export/TrackExport.m",
+      "Export/TrackCacheExport.m",
+      "Export/CacheStorageKey.m",
+      "Export/CacheEnvelope.c",
+      "Export/OggExport.c",
+      "Export/MediaDecode.c",
+      "Export/NativeCacheMap.m",
+      "Export/ExportObservation.m",
+      "Export/NativeMediaKeyPath.m",
+      "Export/ExportAlbumMetadata.m",
+      "Export/ExportNativeAdapters.m",
+      "Export/OggArtwork.c",
+      "Export/ExportArtworkMetadata.m",
+      "Export/ExportArtwork.m",
+      "Export/ExportLibrary.m",
+      "Export/ExportKeyVault.m",
+      "Export/ExportKeyStore.m",
+      "Export/M4AExport.m",
+      "Export/NativeShareHooks.m",
+      "Export/ExportShareFolder.m",
+      "Export/ExportCacheIndex.m",
+      "Export/TemporaryOfflineExport.m",
+      "Export/ShareFilePromise.m",
+      "Export/ShareCompletionRelay.m",
+      "Export/M4AConversionQueue.m",
+      "Export/OggInspection.c",
+      "Export/OggValidationTrace.m"
+    ],
+    "offline_library": [
+      "UI/PixiePageController.m",
+      "Library/OfflineLibraryCatalog.m",
+      "Library/OfflineLibraryDelete.m",
+      "Library/SpotifyCacheClear.m",
+      "Library/OfflineLibraryExport.m",
+      "Library/OfflineLibraryPackage.m",
+      "Library/OfflineLibraryUI.m",
+      "Library/OfflineLibraryChrome.m",
+      "Library/OfflineLibraryProgress.m"
     ]
   },
   "companion_sources": [
@@ -81,6 +121,7 @@
     "Downloads/ManualTrackDownload.m",
     "UI/PixieManagerActions.m",
     "UI/PixieManagerSettings.m",
+    "UI/PixiePageController.m",
     "Diagnostics/EncodedAudio.m",
     "Catalog/AlbumMetadata.m",
     "Catalog/ArtistMetadata.m",
@@ -90,6 +131,7 @@
     "Diagnostics/SupportLogSerializer.m",
     "Devices/OfflineCompatibilityChecks.m",
     "Devices/OfflineDeviceManager.m",
+    "Devices/NativeDownloadQuality.m",
     "Diagnostics/DiagnosticTrace.m",
     "Diagnostics/TracePlatform.m",
     "Diagnostics/NativeKeyTrace.m",
@@ -115,7 +157,42 @@
     "Playlists/ReleaseItemObservation.m",
     "Diagnostics/JournalWriter.m",
     "Diagnostics/JournalWireDecoder.m",
-    "Diagnostics/JournalObservation.m"
+    "Diagnostics/JournalObservation.m",
+    "Export/TrackExport.m",
+    "Export/TrackCacheExport.m",
+    "Export/CacheStorageKey.m",
+    "Export/CacheEnvelope.c",
+    "Export/OggExport.c",
+    "Export/MediaDecode.c",
+    "Export/NativeCacheMap.m",
+    "Export/ExportObservation.m",
+    "Export/NativeMediaKeyPath.m",
+    "Export/ExportAlbumMetadata.m",
+    "Export/ExportNativeAdapters.m",
+    "Export/OggArtwork.c",
+    "Export/ExportArtworkMetadata.m",
+    "Export/ExportArtwork.m",
+    "Export/ExportLibrary.m",
+    "Export/ExportKeyVault.m",
+    "Export/ExportKeyStore.m",
+    "Export/M4AExport.m",
+    "Export/NativeShareHooks.m",
+    "Export/ExportShareFolder.m",
+    "Export/ExportCacheIndex.m",
+    "Export/TemporaryOfflineExport.m",
+    "Export/ShareFilePromise.m",
+    "Export/ShareCompletionRelay.m",
+    "Library/OfflineLibraryCatalog.m",
+    "Library/OfflineLibraryDelete.m",
+    "Library/SpotifyCacheClear.m",
+    "Library/OfflineLibraryExport.m",
+    "Library/OfflineLibraryPackage.m",
+    "Library/OfflineLibraryUI.m",
+    "Library/OfflineLibraryChrome.m",
+    "Library/OfflineLibraryProgress.m",
+    "Export/M4AConversionQueue.m",
+    "Export/OggInspection.c",
+    "Export/OggValidationTrace.m"
   ],
   "supported_packaging": [
     "ipa-companion"
@@ -146,5 +223,9 @@
       "kind": 2
     }
   ],
-  "vitrine_version": "1.0.0-beta.16"
+  "vitrine_version": "1.0.0-beta.16",
+  "audio_export": "experimental15-native-unseal",
+  "swift_sources": [
+    "Export/NativeShareBridge.swift"
+  ]
 }

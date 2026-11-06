@@ -87,6 +87,13 @@ static inline NSString *reasonName(uint64_t reason) {
 // Незавершённые состояния: трек ещё должен куда-то перейти.
 static inline BOOL pendingState(NSUInteger state) { return state == 4 || state == 5 || state == 6; }
 static inline BOOL failedState(NSUInteger state) { return state == 1 || state == 7; }
+// Periodic GetItems polling covers only work in progress: tracks Spotify reports
+// as queued/waiting/downloading, and tracks Pixie asked to download whose first
+// native state has not arrived. Tracks merely seen in a catalog stream, already
+// downloaded, failed or not requested are never re-queried.
+static inline BOOL SAPJournalNeedsPoll(BOOL seen, NSUInteger state, NSUInteger addRequests) {
+    return seen ? pendingState(state) : addRequests > 0;
+}
 static inline NSString *shortIdentifier(NSString *uri) {
     NSRange range = [uri rangeOfString:@":" options:NSBackwardsSearch];
     return range.location == NSNotFound ? uri : [uri substringFromIndex:range.location + 1];

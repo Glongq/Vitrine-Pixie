@@ -1,4 +1,4 @@
-# Build Vitrine beta 16 / Spotify 9.1.90 / Pixie 1.3
+# Build Vitrine beta 16 / Spotify 9.1.90 / Pixie 1.4
 
 The supported path is the companion IPA. Addresses and source ownership live in
 `NativeDownloads/targets/spotify-9.1.90.json`. Historical build commands, unused queues and unported jailbreak tools are not

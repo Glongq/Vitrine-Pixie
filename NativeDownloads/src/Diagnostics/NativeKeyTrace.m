@@ -130,12 +130,17 @@ static void observe(unsigned kind,const uint64_t *frame,uintptr_t image) {
     }
     SAP_TRACE("native_key",kind==1?"success_callback_invoked":"failure_callback_invoked",op,facts);
 }
+static _Atomic(SAPOfflineKeySuccessObserver) offlineSuccessObserver;
+void SAPSetOfflineKeySuccessObserver(SAPOfflineKeySuccessObserver observer) {
+    atomic_store(&offlineSuccessObserver,observer);
+}
 __attribute__((visibility("default"))) void SAPTraceNativeBoundary(unsigned kind,const uint64_t *registers) {
-    // The result/key pointer is never dereferenced. The static trampoline saves
-    // all volatile arguments, vectors and FP/condition state around this call.
-    if(!SAPTraceIsActive())return;
+    SAPOfflineKeySuccessObserver observer=kind==1?atomic_load(&offlineSuccessObserver):NULL;
+    if(!observer&&!SAPTraceIsActive())return;
     Dl_info location={0};if(!dladdr(__builtin_return_address(0),&location)||!supported((uintptr_t)location.dli_fbase))return;
-    @autoreleasepool {@try {observe(kind,registers,(uintptr_t)location.dli_fbase);}
+    @autoreleasepool {@try {
+        if(observer)observer(registers,(uintptr_t)location.dli_fbase);
+        if(SAPTraceIsActive())observe(kind,registers,(uintptr_t)location.dli_fbase);}
         @catch(NSException *exception){SAP_TRACE("native_key","observer_failed",0,@{@"exception":exception.name?:@"unknown",@"native_flow_modified":@NO});}}
 }
 NSDictionary *SAPNativeKeyTraceReport(void) {

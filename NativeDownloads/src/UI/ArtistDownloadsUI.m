@@ -1,4 +1,6 @@
+#import "ArtistListAppearance.h"
 #import "ArtistDownloadsUI.h"
+#import "ArtistCatalogAppend.h"
 #import "ArtistMetadata.h"
 #import "ArtistDownloadSession.h"
 #import "PlaylistDownloads.h"
@@ -12,6 +14,12 @@
 #import <UIKit/UIKit.h>
 #import <CoreText/CoreText.h>
 #import <objc/runtime.h>
+
+static BOOL SAPArtistDownloadsIsDismissing(UIViewController *controller) {
+    for(UIViewController *ancestor=controller;ancestor;ancestor=ancestor.parentViewController)
+        if(ancestor.isBeingDismissed)return YES;
+    return NO;
+}
 
 static void SAPAfterDialogDismissal(UIAlertController *dialog,dispatch_block_t completion) {
     if(dialog.isBeingDismissed && dialog.transitionCoordinator){[dialog.transitionCoordinator animateAlongsideTransition:nil completion:^(__unused id<UIViewControllerTransitionCoordinatorContext> context){completion();}];return;}
@@ -49,7 +57,7 @@ static void SAPAfterDialogDismissal(UIAlertController *dialog,dispatch_block_t c
 - (instancetype)init {return [super initWithStyle:UITableViewStyleInsetGrouped];}
 - (void)viewDidLoad {
     [super viewDidLoad];self.title=self.artistName.length?self.artistName:@"Artist downloads";
-    self.overrideUserInterfaceStyle=UIUserInterfaceStyleDark;self.tableView.backgroundColor=UIColor.blackColor;
+    self.overrideUserInterfaceStyle=UIUserInterfaceStyleDark;self.tableView.backgroundColor=UIColor.clearColor;
     self.tableView.rowHeight=UITableViewAutomaticDimension;self.tableView.estimatedRowHeight=76;
     if(@available(iOS 16.0,*))self.tableView.selfSizingInvalidation=UITableViewSelfSizingInvalidationEnabled;
     self.tableView.sectionHeaderHeight=UITableViewAutomaticDimension;self.tableView.estimatedSectionHeaderHeight=52;
@@ -61,7 +69,7 @@ static void SAPAfterDialogDismissal(UIAlertController *dialog,dispatch_block_t c
         BOOL senderMatches=action.sender==page.stopControl;
         BOOL visible=page.itemsVisible && page.viewIfLoaded.window!=nil && !page.navigationController.toolbarHidden && [page.toolbarItems containsObject:page.stopControl];
         BOOL top=page.navigationController.topViewController==page;
-        BOOL modal=page.presentedViewController!=nil || page.navigationController.presentedViewController!=nil || page.isBeingDismissed || page.navigationController.isBeingDismissed;
+        BOOL modal=page.presentedViewController!=nil || page.navigationController.presentedViewController!=nil || SAPArtistDownloadsIsDismissing(page);
         BOOL accepted=senderMatches && visible && top && !modal && page.stopControl.enabled;
         NSArray *scope=page.catalog[@"observation_releases"]?:page.allReleases;
         if(SAPDiagnosticsEnabled())SAP_JOURNAL_ACTION(accepted?@"artist_stop_all":@"artist_stop_all_ignored",@{@"artist_uri":page.artistURI?:@"",@"caller":@"Stop UIBarButtonItem primaryAction handler",@"action_origin":@"bar_button_primary_action",@"requested_reason":@"stop_artist_downloads",@"sender_matches":@(senderMatches),@"visible":@(visible),@"top_controller":@(top),@"presented_modal":@(modal),@"control_enabled":@(page.stopControl.enabled),@"selecting":@(page.selecting),@"release_count":@(scope.count),@"call_stack":NSThread.callStackSymbols});
@@ -80,7 +88,7 @@ static void SAPAfterDialogDismissal(UIAlertController *dialog,dispatch_block_t c
     self.footerLabel=[UILabel new];self.footerLabel.numberOfLines=0;self.footerLabel.textColor=UIColor.secondaryLabelColor;self.footerLabel.font=[UIFont preferredFontForTextStyle:UIFontTextStyleFootnote];
     self.footerContainer=[UIView new];[self.footerContainer addSubview:self.footerLabel];
     [self.navigationController setToolbarHidden:NO animated:NO];
-    UIBarButtonItem *back=[[UIBarButtonItem alloc]initWithImage:[UIImage systemImageNamed:@"chevron.left"] style:UIBarButtonItemStylePlain target:self action:@selector(close)];
+    UIBarButtonItem *back=[[UIBarButtonItem alloc]initWithImage:[UIImage systemImageNamed:@"xmark"] style:UIBarButtonItemStylePlain target:self action:@selector(close)];
     back.tintColor=UIColor.whiteColor;back.accessibilityLabel=@"Back";self.navigationItem.leftBarButtonItem=back;
     __weak typeof(self) weak=self;
     self.foregroundObserver=[NSNotificationCenter.defaultCenter addObserverForName:UIApplicationDidBecomeActiveNotification object:nil queue:NSOperationQueue.mainQueue usingBlock:^(__unused NSNotification *note){typeof(self) page=weak;if(page.itemsVisible && page.viewIfLoaded.window){[page detachItems];[page attachItems];if(page.sessionObservation)[page.sessionObservation refresh];else[page bindSession];}}];
@@ -119,7 +127,7 @@ static void SAPAfterDialogDismissal(UIAlertController *dialog,dispatch_block_t c
 - (void)cancelCatalogLoad {self.loadGeneration++;dispatch_block_t stop=self.cancelCatalog;self.cancelCatalog=nil;if(stop)stop();}
 - (void)cancelArtworkLoads {for(SAPArtistReleaseCell *cell in self.artworkCells)[cell cancelArtworkLoad];}
 - (void)close {[self cancelArtworkLoads];[self cancelCatalogLoad];[self detach];[self dismissViewControllerAnimated:YES completion:nil];}
-- (void)viewDidDisappear:(BOOL)animated {[super viewDidDisappear:animated];self.itemsVisible=NO;[self.loadingSpinner stopAnimating];[self detachItems];if(self.navigationController.isBeingDismissed){[self cancelArtworkLoads];[self cancelCatalogLoad];[self detach];}}
+- (void)viewDidDisappear:(BOOL)animated {[super viewDidDisappear:animated];self.itemsVisible=NO;[self.loadingSpinner stopAnimating];[self detachItems];if(SAPArtistDownloadsIsDismissing(self)){[self cancelArtworkLoads];[self cancelCatalogLoad];[self detach];}}
 - (void)dealloc {if(_foregroundObserver)[NSNotificationCenter.defaultCenter removeObserver:_foregroundObserver];for(SAPArtistReleaseCell *cell in _artworkCells)[cell cancelArtworkLoad];if(_cancelCatalog)_cancelCatalog();[_sessionObservation invalidate];if(_detachPlaylistObserver)_detachPlaylistObserver();[_itemObservation invalidate];}
 - (void)bindSession {
     if(!self.allReleases.count)return;
@@ -142,7 +150,7 @@ static void SAPAfterDialogDismissal(UIAlertController *dialog,dispatch_block_t c
     [self refreshVisibleStates];[self updateControls];
 }
 - (void)applyPendingCatalog {
-    if(!self.pendingCatalog || !self.viewIfLoaded.window || self.navigationController.isBeingDismissed || self.isBeingDismissed || self.tableView.isTracking || self.tableView.isDragging || self.tableView.isDecelerating || self.presentedViewController || self.navigationController.topViewController!=self)return;
+    if(!self.pendingCatalog || !self.viewIfLoaded.window || SAPArtistDownloadsIsDismissing(self) || self.tableView.isTracking || self.tableView.isDragging || self.tableView.isDecelerating || self.presentedViewController || self.navigationController.topViewController!=self)return;
     NSDictionary *next=self.pendingCatalog;self.pendingCatalog=nil;NSIndexPath *top=[self.tableView.indexPathsForVisibleRows sortedArrayUsingSelector:@selector(compare:)].firstObject;
     NSString *anchor=top?self.sections[top.section][@"releases"][top.row][@"uri"]:nil;CGFloat relative=top?[self.tableView rectForRowAtIndexPath:top].origin.y-self.tableView.contentOffset.y:0;
     NSDictionary *old=self.catalog;
@@ -157,7 +165,21 @@ static void SAPAfterDialogDismissal(UIAlertController *dialog,dispatch_block_t c
     NSMutableDictionary *display=[next mutableCopy];display[@"sections"]=merged;self.catalog=display;NSMutableArray *all=[NSMutableArray array];for(NSDictionary *section in self.sections)[all addObjectsFromArray:section[@"releases"]];self.catalogReleases=all;
     NSMutableSet *present=[NSMutableSet set];for(NSDictionary *release in all)[present addObject:release[@"uri"]];[self.selectedReleaseURIs intersectSet:present];
     BOOL changed=![old[@"sections"]isEqual:display[@"sections"]];
-    if(changed)[UIView performWithoutAnimation:^{[self.tableView reloadData];[self.tableView layoutIfNeeded];if(anchor){for(NSUInteger section=0;section<self.sections.count;section++){NSArray *rows=self.sections[section][@"releases"];for(NSUInteger row=0;row<rows.count;row++)if([rows[row][@"uri"]isEqual:anchor]){CGFloat minimum=-self.tableView.adjustedContentInset.top,maximum=MAX(minimum,self.tableView.contentSize.height-self.tableView.bounds.size.height+self.tableView.adjustedContentInset.bottom);CGFloat target=[self.tableView rectForRowAtIndexPath:[NSIndexPath indexPathForRow:row inSection:section]].origin.y-relative;[self.tableView setContentOffset:CGPointMake(self.tableView.contentOffset.x,MIN(maximum,MAX(minimum,target))) animated:NO];return;}}}}];
+    if(changed)[UIView performWithoutAnimation:^{
+        NSDictionary *changes=SAPArtistCatalogAppendChanges(old[@"sections"]?:@[],display[@"sections"]);
+        if(changes){
+            [self.tableView performBatchUpdates:^{
+                if([changes[@"sections"]count])[self.tableView insertSections:changes[@"sections"] withRowAnimation:UITableViewRowAnimationNone];
+                if([changes[@"rows"]count])[self.tableView insertRowsAtIndexPaths:changes[@"rows"] withRowAnimation:UITableViewRowAnimationNone];
+            } completion:nil];
+            // Section tags and the loading counter follow their new indexes,
+            // without rebuilding cells or restarting their cover requests.
+            for(NSUInteger section=0;section<self.sections.count;section++){
+                SAPArtistCategoryHeader *header=(id)[self.tableView headerViewForSection:section];
+                if(header)[self configureCategoryHeader:header section:section];
+            }
+        }else [self.tableView reloadData];
+        [self.tableView layoutIfNeeded];if(anchor){for(NSUInteger section=0;section<self.sections.count;section++){NSArray *rows=self.sections[section][@"releases"];for(NSUInteger row=0;row<rows.count;row++)if([rows[row][@"uri"]isEqual:anchor]){CGFloat minimum=-self.tableView.adjustedContentInset.top,maximum=MAX(minimum,self.tableView.contentSize.height-self.tableView.bounds.size.height+self.tableView.adjustedContentInset.bottom);CGFloat target=[self.tableView rectForRowAtIndexPath:[NSIndexPath indexPathForRow:row inSection:section]].origin.y-relative;[self.tableView setContentOffset:CGPointMake(self.tableView.contentOffset.x,MIN(maximum,MAX(minimum,target))) animated:NO];return;}}}}];
     [self updateControls];__weak typeof(self) weak=self;
     NSArray *scope=self.catalog[@"observation_releases"]?:self.allReleases;
     if(!self.detachPlaylistObserver && scope.count)self.detachPlaylistObserver=SAPObservePlaylistReleaseDownloadsForArtist(self.artistURI,scope,^(NSDictionary *snapshot){typeof(self) page=weak;if(!page)return;page.playlistSnapshot=snapshot;[page requestStateRefresh];});
@@ -270,6 +292,7 @@ static void SAPAfterDialogDismissal(UIAlertController *dialog,dispatch_block_t c
 - (void)configureCell:(UITableViewCell *)cell release:(NSDictionary *)release {
     SAPArtistReleaseCell *releaseCell=(id)cell;NSDictionary *renderState=[self stateFor:release[@"uri"]];BOOL renderSelected=[self.selectedReleaseURIs containsObject:release[@"uri"]];
     if([releaseCell.renderedRelease isEqual:release] && [releaseCell.renderedState isEqual:renderState] && releaseCell.renderedSelecting==self.selecting && releaseCell.renderedSelected==renderSelected)return;
+    if(![releaseCell.renderedRelease[@"uri"]isEqual:release[@"uri"]])releaseCell.progressIndicator=nil;
     releaseCell.renderedRelease=release;releaseCell.renderedState=renderState;releaseCell.renderedSelecting=self.selecting;releaseCell.renderedSelected=renderSelected;
     if(!cell)return;
     NSString *coverURL=release[@"cover_url"],*coverID=SAPArtistArtworkIdentifier(coverURL);
@@ -316,7 +339,8 @@ static void SAPAfterDialogDismissal(UIAlertController *dialog,dispatch_block_t c
     if([state[@"playlist_download"]boolValue])subtitle=[subtitle stringByAppendingFormat:@" · In %@",state[@"playlist_name"]?:@"playlist"];
     if([state[@"error"]length])subtitle=[subtitle stringByAppendingFormat:@" · %@",state[@"error"]];
     if(!reuseContent || ![old.secondaryText isEqual:subtitle]){content.secondaryText=subtitle;cell.contentConfiguration=content;}
-    cell.accessoryType=UITableViewCellAccessoryNone;cell.backgroundColor=UIColor.secondarySystemGroupedBackgroundColor;
+    cell.accessoryType=UITableViewCellAccessoryNone;
+    SAPApplyArtistListRowBackground(cell);
     [(SAPArtistReleaseCell *)cell setDownloadIndicator:indicator];
     if(!same)[(SAPArtistReleaseCell *)cell cancelArtworkLoad];
     objc_setAssociatedObject(cell,&SAPArtistArtworkURLKey,coverID,OBJC_ASSOCIATION_COPY_NONATOMIC);
@@ -383,7 +407,7 @@ static void SAPAfterDialogDismissal(UIAlertController *dialog,dispatch_block_t c
     picker.onChoose=^(NSDictionary *playlist,UIViewController *presenter){
         UIAlertController *alert=[UIAlertController alertControllerWithTitle:@"Add and download?" message:[NSString stringWithFormat:@"Add %lu selected releases to \"%@\" and download this playlist? Existing tracks stay in place. Tracks already in the playlist will not be added again.",(unsigned long)releases.count,playlist[@"name"]] preferredStyle:UIAlertControllerStyleAlert];
         [alert addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
-        __weak UIAlertController *weakAlert=alert;[alert addAction:[UIAlertAction actionWithTitle:@"Add and download" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action){typeof(self) page=weak;if(!page)return;SAPAfterDialogDismissal(weakAlert,^{typeof(self) current=weak;if(!current)return;UINavigationController *navigation=current.navigationController;[navigation popToViewController:current animated:YES];dispatch_block_t start=^{if(navigation.topViewController==current && !navigation.isBeingDismissed)[current startPlaylist:releases uri:playlist[@"uri"] name:playlist[@"name"]];};if(navigation.transitionCoordinator)[navigation.transitionCoordinator animateAlongsideTransition:nil completion:^(__unused id<UIViewControllerTransitionCoordinatorContext> context){start();}];else start();});}]];[presenter presentViewController:alert animated:YES completion:nil];
+        __weak UIAlertController *weakAlert=alert;[alert addAction:[UIAlertAction actionWithTitle:@"Add and download" style:UIAlertActionStyleDefault handler:^(__unused UIAlertAction *action){typeof(self) page=weak;if(!page)return;SAPAfterDialogDismissal(weakAlert,^{typeof(self) current=weak;if(!current)return;UINavigationController *navigation=current.navigationController;[navigation popToViewController:current animated:YES];dispatch_block_t start=^{if(navigation.topViewController==current && !SAPArtistDownloadsIsDismissing(navigation))[current startPlaylist:releases uri:playlist[@"uri"] name:playlist[@"name"]];};if(navigation.transitionCoordinator)[navigation.transitionCoordinator animateAlongsideTransition:nil completion:^(__unused id<UIViewControllerTransitionCoordinatorContext> context){start();}];else start();});}]];[presenter presentViewController:alert animated:YES completion:nil];
     };[self.navigationController pushViewController:picker animated:YES];
 }
 - (void)downloadSelected {
@@ -395,15 +419,59 @@ static void SAPAfterDialogDismissal(UIAlertController *dialog,dispatch_block_t c
     [menu addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:^(__unused UIAlertAction *action){[weak afterDialog:weakMenu perform:nil];}]];menu.popoverPresentationController.barButtonItem=self.downloadControl;[self presentViewController:menu animated:YES completion:nil];
 }
 @end
+@interface SAPArtistDownloadsSheetController : UIViewController
+@property(nonatomic,strong) UINavigationController *navigationContent;
+- (instancetype)initWithNavigationContent:(UINavigationController *)navigation;
+@end
+@implementation SAPArtistDownloadsSheetController
+- (instancetype)initWithNavigationContent:(UINavigationController *)navigation {
+    if((self=[super initWithNibName:nil bundle:nil]))_navigationContent=navigation;
+    return self;
+}
+- (void)loadView {
+    UIVisualEffectView *material=SAPArtistListMaterial();
+    if(@available(iOS 26.0,*))material.cornerConfiguration=[UICornerConfiguration configurationWithUniformRadius:UICornerRadius.containerConcentricRadius];
+    self.view=material;
+}
+- (void)viewDidLoad {
+    [super viewDidLoad];
+    UIVisualEffectView *material=(UIVisualEffectView *)self.view;
+    UINavigationController *navigation=self.navigationContent;
+    [self addChildViewController:navigation];
+    navigation.view.translatesAutoresizingMaskIntoConstraints=NO;
+    [material.contentView addSubview:navigation.view];
+    [NSLayoutConstraint activateConstraints:@[
+        [navigation.view.leadingAnchor constraintEqualToAnchor:material.contentView.leadingAnchor],
+        [navigation.view.trailingAnchor constraintEqualToAnchor:material.contentView.trailingAnchor],
+        [navigation.view.topAnchor constraintEqualToAnchor:material.contentView.topAnchor],
+        [navigation.view.bottomAnchor constraintEqualToAnchor:material.contentView.bottomAnchor]
+    ]];
+    [navigation didMoveToParentViewController:self];
+}
+- (UIViewController *)childViewControllerForStatusBarStyle {return self.navigationContent;}
+- (UIViewController *)childViewControllerForStatusBarHidden {return self.navigationContent;}
+@end
+
 void SAPShowArtistDownloads(NSString *artistURI,NSString *artistName,UIViewController *presenter) {
     if(!NSThread.isMainThread) {dispatch_async(dispatch_get_main_queue(),^{SAPShowArtistDownloads(artistURI,artistName,presenter);});return;}
     if(![presenter isKindOfClass:UIViewController.class] || !presenter.viewIfLoaded.window)return;
     while(presenter.presentedViewController && !presenter.presentedViewController.isBeingDismissed)presenter=presenter.presentedViewController;
-    if([presenter isKindOfClass:SAPArtistDownloadsController.class])return;
+    if([presenter isKindOfClass:SAPArtistDownloadsController.class] || [presenter isKindOfClass:SAPArtistDownloadsSheetController.class])return;
     SAPArtistDownloadsController *page=[SAPArtistDownloadsController new];page.artistURI=artistURI;page.artistName=artistName;
     UINavigationController *navigation=[[UINavigationController alloc]initWithRootViewController:page];navigation.overrideUserInterfaceStyle=UIUserInterfaceStyleDark;
-    navigation.navigationBar.barStyle=UIBarStyleBlack;navigation.navigationBar.tintColor=UIColor.whiteColor;
-    navigation.modalPresentationStyle=UIModalPresentationPageSheet;
-    if(@available(iOS 15.0,*))navigation.sheetPresentationController.detents=@[UISheetPresentationControllerDetent.largeDetent];
-    [presenter presentViewController:navigation animated:YES completion:nil];
+    navigation.view.backgroundColor=UIColor.clearColor;
+    navigation.navigationBar.tintColor=UIColor.whiteColor;
+    UIViewController *sheetContent=navigation;
+    if(@available(iOS 26.1,*))sheetContent=[[SAPArtistDownloadsSheetController alloc]initWithNavigationContent:navigation];
+    sheetContent.overrideUserInterfaceStyle=UIUserInterfaceStyleDark;
+    sheetContent.modalPresentationStyle=UIModalPresentationPageSheet;
+    if(@available(iOS 15.0,*)) {
+        UISheetPresentationController *sheet=sheetContent.sheetPresentationController;
+        sheet.detents=@[UISheetPresentationControllerDetent.largeDetent];
+        sheet.selectedDetentIdentifier=UISheetPresentationControllerDetentIdentifierLarge;
+        sheet.prefersGrabberVisible=YES;
+        // Only the root material renders glass; the presentation adds no second effect.
+        if(@available(iOS 26.1,*))sheet.backgroundEffect=[UIColorEffect effectWithColor:UIColor.clearColor];
+    }
+    [presenter presentViewController:sheetContent animated:YES completion:nil];
 }

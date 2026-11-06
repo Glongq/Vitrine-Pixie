@@ -23,13 +23,19 @@
 }
 - (void)next {
     if(self.filling || self.stopBatchDepth || self.watchSuspended || self.repairing || self.preparing)return;
-    // Preparation may overlap, but every submitted or uncertain album keeps
-    // one of the two ownership slots until its native outcome is definite.
+    // Albums: up to four releases prepare at once and each is sent when ready.
+    // Playlists: preparation may overlap, but every submitted or uncertain
+    // playlist keeps one of the two ownership slots until its outcome is definite.
     self.filling=YES;
-    while(self.operations.count<2 && self.queue.count && !self.watchSuspended && !self.repairing && !self.stopBatchDepth) {
+    while(self.queue.count && !self.watchSuspended && !self.repairing && !self.stopBatchDepth) {
         NSDictionary *first=self.queue.firstObject;
         // A selected future release owns its FIFO position, without a native slot.
         if([first[@"reserved_batch_end"]boolValue] || ![self.readyItems[first[@"uri"]]count])break;
+        if(SAPArtistDirectURI(first[@"uri"])) {
+            // Only preparation is bounded; sent releases wait in Spotify's queue.
+            NSUInteger preparing=0;for(SAPArtistAlbumOperation *owned in self.operations.allValues)if(!owned.downloadSent)preparing++;
+            if(preparing>=SAPArtistPreparationWindow || self.operations.count>=SAPArtistSubmittedLimit)break;
+        }else if(self.operations.count>=2)break;
         SAPArtistAlbumOperation *operation=[SAPArtistAlbumOperation new];operation.session=self;operation.item=first;operation.playlistFeedOpen=[operation.item[@"incremental_playlist"]boolValue];operation.token=NSUUID.UUID.UUIDString;operation.sequence=++self.nextSequence;
         [self.queue removeObjectAtIndex:0];[self.queueOrders removeObjectForKey:operation.uri];[self.queuedURIs removeObject:operation.uri];self.operations[operation.uri]=operation;
         [self stateFor:operation.uri][@"local_phase"]=@"preparing";[operation armWorkDeadline];[self publish];
@@ -55,13 +61,19 @@
     // A recovery owns the original FIFO reservation through its deliberate zero.
     for(SAPArtistAlbumOperation *owned in self.operations.allValues)if(owned.recoveryStage.length)return;
     self.admitting=YES;
-    // Two verified one-track releases may submit together. Other releases
-    // retain near-tail admission and uncertain outcomes still reserve slots.
+    // Albums are sent as soon as they are prepared. Ordered contexts keep the
+    // pair/near-tail admission and uncertain outcomes still reserve slots.
     NSArray *ordered=[self.operations.allValues sortedArrayUsingComparator:^NSComparisonResult(SAPArtistAlbumOperation *a,SAPArtistAlbumOperation *b){return a.sequence<b.sequence?NSOrderedAscending:a.sequence>b.sequence?NSOrderedDescending:NSOrderedSame;}];
+    BOOL orderedHeld=NO;
     for(SAPArtistAlbumOperation *operation in ordered) {
         if(![operation isCurrent] || operation.paused || operation.downloadSent || !operation.readyForDownload)continue;
+        if(SAPArtistDirectURI(operation.uri)) {
+            // Same as tapping download in Spotify: no predecessor gate.
+            operation.releaseGate=@{@"reason":@"direct"};[operation submitDownload];continue;
+        }
+        if(orderedHeld)continue;
         BOOL earlierUnsent=NO;for(SAPArtistAlbumOperation *earlier in self.operations.allValues)if(earlier.sequence<operation.sequence && !earlier.downloadSent){earlierUnsent=YES;break;}
-        if(earlierUnsent)break;
+        if(earlierUnsent){orderedHeld=YES;continue;}
         SAPArtistAlbumOperation *predecessor=nil;
         // A completed newer operation must not hide an older native waiter.
         for(SAPArtistAlbumOperation *earlier in ordered)if(earlier.sequence<operation.sequence && earlier.downloadSent && [earlier isCurrent]){predecessor=earlier;break;}
@@ -72,8 +84,8 @@
             if([predecessor isCurrent]) {
                 NSDictionary *raw=self.states[predecessor.uri];uint64_t total=[raw[@"total"]unsignedLongLongValue],done=[raw[@"downloaded"]unsignedLongLongValue];
                 BOOL singlePair=[predecessor.item[@"track_count_verified"]boolValue] && [predecessor.item[@"verified_track_count"]unsignedIntegerValue]==1 && [operation.item[@"track_count_verified"]boolValue] && [operation.item[@"verified_track_count"]unsignedIntegerValue]==1;
-                if(predecessor.paused)break;
-                if(predecessor.singlePairOccupied)break;
+                if(predecessor.paused){orderedHeld=YES;continue;}
+                if(predecessor.singlePairOccupied){orderedHeld=YES;continue;}
                 if(singlePair){
                     // Submit a real pair, then finish that pair before replacing
                     // its faster member. Otherwise newer contexts can repeatedly
@@ -82,7 +94,7 @@
                     reason=@"verified_single_pair";facts[@"predecessor_track_count"]=@1;facts[@"selected_track_count"]=@1;
                 }
                 else {
-                    if(!predecessor.hasTrustedCounts || !total || done>total || total-done>1)break;
+                    if(!predecessor.hasTrustedCounts || !total || done>total || total-done>1){orderedHeld=YES;continue;}
                     reason=@"one_track_remaining";facts[@"total_tracks"]=@(total);facts[@"downloaded_tracks"]=@(done);facts[@"remaining_tracks"]=@(total-done);
                 }
             }else reason=@"predecessor_terminal";
@@ -90,5 +102,17 @@
         facts[@"reason"]=reason;operation.releaseGate=facts;[operation submitDownload];
     }
     self.admitting=NO;
+}
+- (void)scheduleNext {
+    if(self.nextScheduled)return;self.nextScheduled=YES;__weak typeof(self) weak=self;
+    dispatch_async(dispatch_get_main_queue(),^{typeof(self) s=weak;if(!s)return;s.nextScheduled=NO;[s next];[s pumpAdmissions];});
+}
+- (void)scheduleWatchRenewal {
+    // Submissions arrive one by one as preparation completes. Renew the live
+    // streams at most every 0.2 s instead of once per release; older streams
+    // keep updating other releases and ignore only the newly sent attempts.
+    self.watchNeedsRenewal=YES;
+    if(self.watchRenewalScheduled)return;self.watchRenewalScheduled=YES;__weak typeof(self) weak=self;
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW,(int64_t)(0.2*NSEC_PER_SEC)),dispatch_get_main_queue(),^{typeof(self) s=weak;if(!s)return;s.watchRenewalScheduled=NO;s.watchRenewalForced=YES;[s startWatch];s.watchRenewalForced=NO;});
 }
 @end

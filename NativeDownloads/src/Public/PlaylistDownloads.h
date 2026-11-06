@@ -3,6 +3,8 @@
 
 // Main-thread callbacks, authenticated native services, bounded cancellable reads.
 dispatch_block_t SAPFetchWritablePlaylists(void (^completion)(NSArray<NSDictionary *> *,NSString *));
+// Complete, revision-consistent playlist contents. Main-queue callback and cancellation.
+dispatch_block_t SAPFetchPlaylistContents(NSString *uri,void (^completion)(NSDictionary *,NSString *));
 BOOL SAPStartPlaylistReleaseDownload(NSArray<NSDictionary *> *releases,NSString *playlistURI,NSString *newName,NSString **error);
 dispatch_block_t SAPObservePlaylistReleaseDownloads(NSArray<NSDictionary *> *releases,void (^completion)(NSDictionary *));
 // A catalog owns live native item evidence; it is discarded on close.

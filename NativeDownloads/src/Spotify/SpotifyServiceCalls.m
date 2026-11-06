@@ -93,6 +93,7 @@ static void deliverReadOnlyStreamResponse(SAPReadOnlyStream *stream, NSData *res
         return;
     }
     stream.receivedFirstResponse = YES;
+    SAPRememberReadOnlyTransport(stream.endpoint,stream.serviceName,stream.method);
     // The active stream owns its endpoint. Candidate snapshots are retained
     // only during this finite handoff, never by a global strong cache.
     stream.endpoints=nil;stream.verifiedEndpoints=nil;
@@ -251,6 +252,7 @@ static void tryReadOnlyCall(SAPReadOnlyCall *call) {
                 return;
             }
             SAPRememberTransport(endpoint, NO, YES);
+            if(!call.commandCompletion)SAPRememberReadOnlyTransport(endpoint,call.serviceName,call.method);
             finishReadOnlyCall(call, response, nil);
         });
     };
@@ -289,7 +291,7 @@ dispatch_block_t SAPCallReadOnlyServiceCancellable(NSString *serviceName, NSStri
     call.traceOperation=parent;
     dispatch_async(SAPTransportWorker(), ^{
         if(call.isCancelled) { finishReadOnlyCall(call,nil,nil); return; }
-        call.endpoints = SAPTransportCandidates(); call.completion = completion;
+        call.endpoints = SAPTransportCandidatesForRead(serviceName,method); call.completion = completion;
         if (!readOnlyCalls) readOnlyCalls = [NSMutableSet set];
         [readOnlyCalls addObject:call];
         tryReadOnlyCall(call);
@@ -308,10 +310,11 @@ void SAPInvokeServiceOnce(NSString *serviceName,NSString *method,NSData *payload
     SAPInstallTrackDownloader();
     BOOL offline=[serviceName isEqual:SAPOfflineService];
     BOOL playlist=[serviceName hasPrefix:@"spotify.playlist_esperanto.proto."];
-    NSString *requestedEvent=offline?@"offline_explicit_command_requested":playlist?@"playlist_explicit_command_requested":@"collection_explicit_command_requested";
-    NSString *replyEvent=offline?@"offline_explicit_command_reply":playlist?@"playlist_explicit_command_reply":@"collection_explicit_command_reply";
+    BOOL storage=[serviceName hasPrefix:@"spotify.storage.esperanto.proto."];
+    NSString *requestedEvent=offline?@"offline_explicit_command_requested":playlist?@"playlist_explicit_command_requested":storage?@"storage_explicit_command_requested":@"collection_explicit_command_requested";
+    NSString *replyEvent=offline?@"offline_explicit_command_reply":playlist?@"playlist_explicit_command_reply":storage?@"storage_explicit_command_reply":@"collection_explicit_command_reply";
     SAPTraceID parent=SAPTraceCurrentOperation();
-    if(!parent&&SAPTraceIsActive())parent=SAPTraceBegin(offline?@"explicit_offline_command":playlist?@"explicit_playlist_command":@"explicit_collection_command",@"pixie",@{@"service":serviceName,@"method":method});
+    if(!parent&&SAPTraceIsActive())parent=SAPTraceBegin(offline?@"explicit_offline_command":playlist?@"explicit_playlist_command":storage?@"explicit_storage_command":@"explicit_collection_command",@"pixie",@{@"service":serviceName,@"method":method});
     dispatch_async(SAPTransportWorker(),^{
         id endpoint=SAPProvenTransport();
         if(!endpoint){if(completion)dispatch_async(dispatch_get_main_queue(),^{completion(nil,@"No verified Spotify transport. Refresh the device state first.",SAPCommandNotInvoked);});return;}

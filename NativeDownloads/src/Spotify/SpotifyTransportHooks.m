@@ -78,11 +78,37 @@ NSArray *SAPInstallSpotifyTransportHooks(void) {
 #ifdef SAP_RUNTIME_TESTING
                     SAPRememberNativeCall(self, serviceName, methodName);
 #endif
-                    if(!SAPDiagnosticsEnabled())return ((id (*)(id,SEL,id,id,id,id))original)(self,command,serviceName,methodName,payload,callback);
+                    BOOL offline=[serviceName isKindOfClass:NSString.class] && [serviceName isEqual:SAPOfflineService];
+                    BOOL read=[methodName isKindOfClass:NSString.class] && ([methodName hasPrefix:@"Get"] || [methodName hasPrefix:@"Subscribe"]);
+                    // Stock Offline responses prove this service's route even
+                    // when logging is off. Pixie reads learn only after their
+                    // own cancellation/attempt checks in SpotifyServiceCalls.
+                    if(offline && read && !offlineHookDepth && !SAPOnTransportWorker() && callback) {
+                        __weak id endpoint=self;
+                        NSString *service=[serviceName copy],*method=[methodName copy];
+                        // A subscription replies many times but proves its route
+                        // once; later emissions skip the registry entirely.
+                        __block _Atomic(BOOL) learned=NO;
+                        BOOL (^prove)(NSData *)=^BOOL(NSData *data){
+                            if(![data isKindOfClass:NSData.class] || atomic_exchange(&learned,YES))return NO;
+                            SAPRememberReadOnlyTransport(endpoint,service,method);return YES;
+                        };
+                        if([commandName hasPrefix:@"callSingle:"]) {
+                            void (^next)(NSData *)=callback;
+                            callback=^(NSData *data){prove(data);next(data);};
+                        } else {
+                            BOOL (^next)(NSData *)=callback;
+                            callback=^BOOL(NSData *data){prove(data);return next(data);};
+                        }
+                    }
+                    if(!SAPDiagnosticsEnabled()) {
+                        if(offline)offlineHookDepth++;
+                        @try {return ((id (*)(id,SEL,id,id,id,id))original)(self,command,serviceName,methodName,payload,callback);}
+                        @finally {if(offline)offlineHookDepth--;}
+                    }
                     SAPTraceHookCalled(object_getClass(self),command);
                     SAPTraceRPC *trace=traceHookDepth==0?SAPTraceRPCBegin(serviceName,methodName,payload,
                         SAPJournalOnOwnQueue()?@"pixie_diagnostic_query":SAPOnTransportWorker()?@"pixie_service":@"spotify",self,[commandName hasPrefix:@"callStream:"]):nil;
-                    BOOL offline=[serviceName isKindOfClass:NSString.class] && [serviceName isEqual:SAPOfflineService];
                     BOOL playerCall=[serviceName isKindOfClass:NSString.class] && [serviceName isEqual:@"spotify.player.esperanto.proto.ContextPlayer"];
                     if(SAPDiagnosticsEnabled() && playerCall && playerHookDepth==0)SAPTraceWithOperation(trace?trace.identifier:SAPTraceCurrentOperation(),^{SAPObservePlayerRequest(serviceName,methodName,payload);});
                     BOOL outer=offlineHookDepth==0, own=SAPJournalOnOwnQueue();

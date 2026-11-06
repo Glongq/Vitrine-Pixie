@@ -63,3 +63,13 @@ NSString *SAPProtoString(NSArray<NSDictionary *> *fields, unsigned number) {
     NSData *data = SAPProtoData(fields, number);
     return data ? [[NSString alloc] initWithData:data encoding:NSUTF8StringEncoding] : nil;
 }
+
+int64_t SAPProtoSInt(NSArray<NSDictionary *> *fields, unsigned number, int64_t fallback) {
+    for (NSDictionary *field in fields.reverseObjectEnumerator) {
+        if ([field[@"number"] unsignedIntValue] != number || [field[@"wire"] unsignedIntValue] != 0) continue;
+        uint64_t raw = [field[@"value"] unsignedLongLongValue];
+        // Protobuf zigzag: (n << 1) ^ (n >> 31) for positive n is 2n.
+        return (int64_t)(raw >> 1) ^ -(int64_t)(raw & 1);
+    }
+    return fallback;
+}

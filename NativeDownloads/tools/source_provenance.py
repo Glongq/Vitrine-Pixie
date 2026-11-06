@@ -18,7 +18,7 @@ def snapshot():
         "tools/verify-release.py", "tools/test-audio-coexistence.py",
         ".github/workflows/native-downloads.yml", "vitrine-upstream/tweak/Makefile",
         "vitrine-upstream/tweak/control", "vitrine-upstream/version.txt",
-        "vitrine-upstream/scripts/extract-flags.py") if (project / name).is_file())
+        "vitrine-upstream/scripts/extract-flags.py"))
     return {str(path.relative_to(project)): hashlib.sha256(path.read_bytes()).hexdigest()
             for path in sorted(paths)}
 

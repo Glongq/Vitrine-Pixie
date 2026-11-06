@@ -4,8 +4,9 @@
 typedef NS_ENUM(NSInteger, SAPSettingsAction) {
     SAPSettingsDownload = 0, SAPSettingsVerify = 1, SAPSettingsCancelDownload = 2,
     SAPSettingsRefreshJournal = 3, SAPSettingsExportJournal = 4, SAPSettingsResetJournal = 5,
-    SAPSettingsMute = 6, SAPSettingsExportReport = 9,
-    SAPSettingsDownloadAlbum = 10, SAPSettingsSendLog = 11
+    SAPSettingsExportReport = 9,
+    SAPSettingsDownloadAlbum = 10, SAPSettingsSendLog = 11,
+    SAPSettingsExportTrackAudio = 12, SAPSettingsExportAlbumAudio = 13
 };
 // UI adapters; these call the existing v21 operations without altering them.
 @interface SAPSettingsActions : NSObject

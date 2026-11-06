@@ -1,4 +1,6 @@
 #import "Localization.h"
+#import "TrackExport.h"
+#import "ExportArtwork.h"
 #import "SupportLogExporter.h"
 #import "DownloadCompatibility.h"
 #import "OfflineDevices.h"
@@ -151,7 +153,7 @@ static NSDictionary *SAPSourceReport(void) {
     NSArray *ports = [AVAudioSession.sharedInstance.currentRoute.outputs valueForKey:@"portName"];
     NSString *route = [ports componentsJoinedByString:@", "];
     NSDictionary *report = @{
-        @"probe_version": @26,@"pixie_build":@"9.1.90-v1.3",@"pixie_revision":@SAP_BUILD_REVISION,@"vitrine_source_commit":@SAP_VITRINE_SOURCE_COMMIT,
+        @"probe_version": @91,@"pixie_build":@"9.1.90-v1.4-offline-manager33-track-cache-export-build055",@"audio_export":SAPTrackExportReport(),@"pixie_revision":@SAP_BUILD_REVISION,@"vitrine_source_commit":@SAP_VITRINE_SOURCE_COMMIT,
         @"diagnostics_enabled":@(SAPDiagnosticsEnabled()), @"backend_ready": @(s.backendReady), @"pcm_confirmed": @(s.pcmConfirmed),
         @"au_set_calls": @(s.setPropertyCalls), @"au_callback_attempts": @(s.callbackAttempts),
         @"au_last_scope": @(s.lastCallbackScope), @"au_last_type": fourcc(s.lastComponentType),
@@ -162,7 +164,7 @@ static NSDictionary *SAPSourceReport(void) {
         @"last_sample_format": fourcc(s.lastSampleFormat),
         @"registrations": @(s.registrations), @"output_starts": @(s.outputStarts), @"callbacks": @(s.callbacks),
         @"frames": @(s.frames), @"pcm_bytes": @(s.pcmBytes), @"nonzero_callbacks": @(s.nonzeroCallbacks),
-        @"muted_callbacks": @(s.mutedCallbacks), @"callback_errors": @(s.callbackErrors),
+        @"callback_errors": @(s.callbackErrors),
         @"sample_rate": @(s.sampleRate), @"channels": @(s.channels), @"format": fourcc(s.formatID),
         @"format_flags": @(s.formatFlags), @"bits_per_channel": @(s.bitsPerChannel),
         @"source_image": source, @"source_callback": [NSString stringWithFormat:@"0x%llx", (unsigned long long)s.procAddress],
@@ -176,7 +178,7 @@ static NSDictionary *SAPSourceReport(void) {
 #if SAP_JAILBREAK
     NSMutableDictionary *withBootstrap=[report mutableCopy];withBootstrap[@"jailbreak_bootstrap"]=SAPJailbreakSupportReport();report=withBootstrap;
 #endif
-    NSString *message = [NSString stringWithFormat:SAPL(@"%@\nCallback: %llu · Кадров: %llu\nPCM: %llu байт · Ненулевых блоков: %llu\n%.0f Hz · %u ch · %u bit · %@\nИсточник: %@\nВыход: %@\nЗаглушённых блоков: %llu%@",@"%@\nCallbacks: %llu · Frames: %llu\nPCM: %llu bytes · Nonzero buffers: %llu\n%.0f Hz · %u ch · %u bit · %@\nSource: %@\nOutput: %@\nMuted buffers: %llu%@"),
+    NSString *message = [NSString stringWithFormat:SAPL(@"%@\nCallback: %llu · Кадров: %llu\nPCM: %llu байт · Ненулевых блоков: %llu\n%.0f Hz · %u ch · %u bit · %@\nИсточник: %@\nВыход: %@",@"%@\nCallbacks: %llu · Frames: %llu\nPCM: %llu bytes · Nonzero buffers: %llu\n%.0f Hz · %u ch · %u bit · %@\nSource: %@\nOutput: %@"),
         [NSString stringWithFormat:SAPL(@"v26 · %@ · Хуков AV: %u\nAU вызовов: %u · Запусков: %u\nКолбэки: %u → %u · %@\nSampleBuffer: %llu · PlayerNode: %llu\nСжатых: %llu (%@) · Ошибок: %llu\n%@",@"v26 · %@ · AV hooks: %u\nAU calls: %u · Starts: %u\nCallbacks: %u → %u · %@\nSampleBuffer: %llu · PlayerNode: %llu\nCompressed: %llu (%@) · Errors: %llu\n%@"),
             s.backendReady ? SAPL(@"библиотека готова",@"library ready") : SAPL(@"ошибка AudioToolbox",@"AudioToolbox error"), s.objcHooks,
             s.setPropertyCalls, s.outputStarts, s.callbackAttempts, s.registrations, fourcc(s.lastComponentType),
@@ -186,8 +188,7 @@ static NSDictionary *SAPSourceReport(void) {
             s.pcmConfirmed ? SAPL(@"PCM получен",@"PCM confirmed") : SAPL(@"PCM пока не подтверждён",@"PCM not confirmed yet")],
         (unsigned long long)s.callbacks, (unsigned long long)s.frames, (unsigned long long)s.pcmBytes,
         (unsigned long long)s.nonzeroCallbacks, s.sampleRate, s.channels, s.bitsPerChannel, fourcc(s.formatID),
-        source.lastPathComponent.length ? source.lastPathComponent : SAPL(@"не зарегистрирован",@"not registered"), route,
-        (unsigned long long)s.mutedCallbacks];
+        source.lastPathComponent.length ? source.lastPathComponent : SAPL(@"не зарегистрирован",@"not registered"), route];
     return @{ @"report":report, @"diagnostics":message, @"journal_summary":@"",
         @"download_active":@(SAPTrackDownloadActive()), @"key_request_mode":SAPKeyRequestModeReport() };
 }
@@ -214,6 +215,37 @@ static NSDictionary *SAPSourceReport(void) {
     }
 #endif
     switch(action) {
+        case SAPSettingsExportTrackAudio:
+        case SAPSettingsExportAlbumAudio: {
+            UIAlertController *progress=[UIAlertController alertControllerWithTitle:@"Audio export" message:@"Preparing audio export… Large albums may take a moment." preferredStyle:UIAlertControllerStyleAlert];
+            [progress addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:^(UIAlertAction *action){SAPCancelAudioExport();}]];
+            SAPDownloadAlert=progress;SAPPresent(progress);
+            __weak UIAlertController *exportProgress=progress;
+            SAPExportCurrentAudioWithKeyRefresh(action==SAPSettingsExportAlbumAudio,^(NSString *text){
+                UIAlertController *progress=exportProgress;
+                if(progress.presentingViewController && !progress.isBeingDismissed)progress.message=text;
+            },^(NSUInteger count,void (^decide)(BOOL)){
+                UIAlertController *progress=exportProgress;
+                void (^ask)(void)=^{
+                    NSString *body=[NSString stringWithFormat:SAPL(@"Полный аудиофайл для %lu трек(ов) не прочитан. Скачать трек заново? Потребуется интернет.",@"Complete audio could not be read for %lu track(s). Download the track again? Internet is required."),(unsigned long)count];
+                    UIAlertController *confirm=[UIAlertController alertControllerWithTitle:SAPL(@"Скачать заново трек?",@"Download track again?") message:body preferredStyle:UIAlertControllerStyleAlert];
+                    [confirm addAction:[UIAlertAction actionWithTitle:SAPL(@"Да",@"Yes") style:UIAlertActionStyleDefault handler:^(UIAlertAction *action){
+                        SAPDownloadAlert=progress;SAPPresent(progress);
+                        decide(YES);
+                    }]];
+                    [confirm addAction:[UIAlertAction actionWithTitle:SAPL(@"Нет",@"No") style:UIAlertActionStyleDefault handler:^(UIAlertAction *action){decide(NO);}]];
+                    [confirm addAction:[UIAlertAction actionWithTitle:SAPL(@"Отмена",@"Cancel") style:UIAlertActionStyleCancel handler:^(UIAlertAction *action){decide(NO);}]];
+                    SAPPresent(confirm);
+                };
+                if(progress.presentingViewController){[progress dismissViewControllerAnimated:YES completion:ask];}else ask();
+            },^(NSArray<NSURL *> *files,NSString *error){
+                BOOL cancelled=[error isEqualToString:@"Audio export cancelled."];
+                void (^show)(void)=^{if(cancelled)return;if(files.count){SAPPrepareAudioExportShareItems(files,action==SAPSettingsExportAlbumAudio,^(NSArray *items,NSString *shareError){if(items.count)SAPShareItems(items);else SAPMessage(shareError?:@"Could not prepare the album folder. The exported files remain in Pixie Exports.");});}else SAPMessage(error?:@"No audio files were exported.");};
+                UIAlertController *progress=exportProgress;
+                if(progress.presentingViewController){if(SAPDownloadAlert==progress)SAPDownloadAlert=nil;[progress dismissViewControllerAnimated:YES completion:show];}else show();
+            });break;
+        }
+
         case SAPSettingsDownload: SAPDownloadCurrentTrack(^(NSString *text){SAPDownloadMessage(text);});break;
         case SAPSettingsDownloadAlbum: SAPDownloadCurrentAlbum(^(NSString *text){SAPDownloadMessage(text);});break;
         case SAPSettingsVerify: SAPVerifyCurrentTrack(^(NSString *text){SAPDownloadMessage(text);});break;
@@ -230,21 +262,24 @@ static NSDictionary *SAPSourceReport(void) {
             });break;
         }
         case SAPSettingsResetJournal: {
-            dispatch_async(SAPReportQueue(),^{
-                NSError *journalError=nil,*traceError=nil;
-                BOOL journalCleared=SAPJournalResetLogFiles(&journalError),traceCleared=SAPTraceReset(&traceError);
-                SAPPlayerTraceReset();if(SAPDiagnosticsEnabled())SAPPlayerTraceSetActive(YES);
-                dispatch_async(dispatch_get_main_queue(),^{
-                    SAPTracePlatformSetActive(SAPDiagnosticsEnabled());
-                    if(!journalCleared||!traceCleared){SAPMessage([NSString stringWithFormat:@"Log reset was not fully completed: %@",(journalError?:traceError).localizedDescription?:@"unknown file error"]);return;}
-                    SAP_JOURNAL_ACTION(@"log_reset",@{@"previous_pixie_history_removed":@YES,@"diagnostics_enabled":@(SAPDiagnosticsEnabled())});
-                    if(SAPDiagnosticsEnabled()){SAPTraceCaptureRuntimeManifest("manual_log_reset");SAPJournalRefresh(@"manual log reset");}
-                    SAPMessage(SAPDiagnosticsEnabled()?@"Previous Pixie logs cleared. A fresh log is now recording.":@"Previous Pixie logs cleared. Diagnostics remains off; enable it to record a new log.");
+            UIAlertController *confirm=[UIAlertController alertControllerWithTitle:@"Reset log?" message:@"Clear the previous Pixie log?" preferredStyle:UIAlertControllerStyleAlert];
+            [confirm addAction:[UIAlertAction actionWithTitle:@"No" style:UIAlertActionStyleCancel handler:nil]];
+            [confirm addAction:[UIAlertAction actionWithTitle:@"Yes" style:UIAlertActionStyleDestructive handler:^(__unused UIAlertAction *action){
+                dispatch_async(SAPReportQueue(),^{
+                    NSError *journalError=nil,*traceError=nil;
+                    BOOL journalCleared=SAPJournalResetLogFiles(&journalError),traceCleared=SAPTraceReset(&traceError);
+                    SAPPlayerTraceReset();if(SAPDiagnosticsEnabled())SAPPlayerTraceSetActive(YES);
+                    dispatch_async(dispatch_get_main_queue(),^{
+                        SAPTracePlatformSetActive(SAPDiagnosticsEnabled());
+                        if(!journalCleared||!traceCleared){SAPMessage([NSString stringWithFormat:@"Log reset was not fully completed: %@",(journalError?:traceError).localizedDescription?:@"unknown file error"]);return;}
+                        SAP_JOURNAL_ACTION(@"log_reset",@{@"previous_pixie_history_removed":@YES,@"diagnostics_enabled":@(SAPDiagnosticsEnabled())});
+                        if(SAPDiagnosticsEnabled()){SAPTraceCaptureRuntimeManifest("manual_log_reset");SAPJournalRefresh(@"manual log reset");}
+                        SAPMessage(SAPDiagnosticsEnabled()?@"Previous Pixie logs cleared. A fresh log is now recording.":@"Previous Pixie logs cleared. Diagnostics remains off; enable it to record a new log.");
+                    });
                 });
-            });break;
+            }]];
+            SAPPresent(confirm);break;
         }
-        case SAPSettingsMute:
-            if(!SpotifyAudioProbeMuteForSeconds(2))SAPMessage(SAPL(@"Сначала запусти воспроизведение на этом iPhone.",@"Start playback on this iPhone first."));break;
         case SAPSettingsExportReport: {
             NSDictionary *native=[self diagnosticSnapshot];
             dispatch_async(SAPReportQueue(),^{

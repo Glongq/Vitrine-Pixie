@@ -3,6 +3,7 @@
 import argparse
 import hashlib
 import json
+import re
 import struct
 import subprocess
 import sys
@@ -15,6 +16,19 @@ from patch_native_restrictions import layout
 import patch_native_restrictions as restriction
 import patch_native_trace as trace
 from signing_metadata import embedded_entitlements
+from pixie_target import PROFILE, resolve_source
+
+
+def pixie_identity():
+    header = resolve_source("BuildIdentity.h").read_text()
+    def value(name):
+        match = re.search(r'^#define ' + name + r' "([^"]+)"$', header, re.MULTILINE)
+        if not match:
+            raise ValueError(f"Missing build identity {name}")
+        return match.group(1)
+    return {"pixie_version": PROFILE["pixie_version"],
+            "revision": value("SAP_BUILD_REVISION"),
+            "source_commit": value("SAP_VITRINE_SOURCE_COMMIT")}
 
 
 def digest(data):
@@ -50,7 +64,8 @@ def main():
     args = parser.parse_args()
     release = args.release_dir.resolve()
     source = args.source.resolve() if args.source else ROOT / "inputs/Spotify 9.1.90 (Vitrine 1.0.0-b16) With Plugins.ipa"
-    ipa = release / "Spotify-9.1.90-Vitrine-b16-Pixie-v1.3.ipa"
+    identity = pixie_identity()
+    ipa = release / f"Spotify-9.1.90-Vitrine-b16-Pixie-v{identity['pixie_version']}.ipa"
     outer = ipa.with_suffix(".zip")
     native = "Payload/Spotify.app/Spotify"
     glass = "Payload/Spotify.app/Frameworks/spotifyglass.dylib"
@@ -123,11 +138,11 @@ def main():
         for forbidden in (b"Start WAV recording", b"Export last WAV", b"wav-writer",
                           b"wav_capture_supported", b"last_wav_available"):
             assert forbidden not in binary, forbidden
-        assert b"9.1.90-v1.3\0" in binary
-        footer = "Spotify 9.1.90 · Vitrine-Pixie v1.3."
+        assert f"9.1.90-v{identity['pixie_version']}-".encode() in binary
+        footer = f"Spotify 9.1.90 · Vitrine-Pixie v{identity['pixie_version']}."
         assert footer.encode("utf-8") + b"\0" in binary or footer.encode("utf-16-le") + b"\0\0" in binary
         assert b"9.1.90-v1.2\0" not in binary
-        assert b"vitrine-b16-pixie-1.3-refactor-9190" in binary
+        assert identity["revision"].encode() + b"\0" in binary
         assert "_SAPShowArtistDownloads" in symbols
     if not args.ipa_only:
         with ZipFile(outer) as archive:
@@ -136,8 +151,7 @@ def main():
             assert archive.read(ipa.name) == ipa.read_bytes()
     report = {
         "spotify_version": "9.1.90", "vitrine_version": "1.0.0-beta.16",
-        "pixie_version": "1.3", "revision": "vitrine-b16-pixie-1.3-refactor-9190",
-        "source_commit": "36d3b38ec39c0b8b696f1d2db026ca9e9939bf14",
+        **identity,
         "input_sha256": digest(source.read_bytes()), "ipa_sha256": digest(ipa.read_bytes()),
         "zip_sha256": None if args.ipa_only else digest(outer.read_bytes()), "changed_input_members": changed,
         "outer_zip_verified": not args.ipa_only,

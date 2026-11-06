@@ -16,7 +16,6 @@ typedef struct {
     bool backendReady;
     bool poolExhausted;
     bool pcmConfirmed;
-    bool muteSupported;
     bool retired;
     uint32_t setPropertyCalls, callbackAttempts, lastCallbackScope, lastComponentType;
     uint32_t lastCallbackElement, lastComponentSubtype;
@@ -30,7 +29,6 @@ typedef struct {
     uint64_t frames;
     uint64_t pcmBytes;
     uint64_t nonzeroCallbacks;
-    uint64_t mutedCallbacks;
     uint64_t callbackErrors;
     uint64_t procAddress;
     uint64_t unitAddress;
@@ -46,7 +44,6 @@ typedef struct {
 } SAPSnapshot;
 
 SAP_EXPORT void SpotifyAudioProbeReadSnapshot(SAPSnapshot *snapshot);
-SAP_EXPORT bool SpotifyAudioProbeMuteForSeconds(double seconds);
 SAP_EXPORT void SpotifyAudioProbeInitialize(void);
 
 // Producer-side paths (AVFoundation scheduling, not the hardware render thread).

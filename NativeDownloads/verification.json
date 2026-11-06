@@ -1,0 +1,24 @@
+{
+  "source_release": "spotify-ui-v4",
+  "verified_on": "2026-10-19",
+  "runtime_sources_match_recorded_release": true,
+  "portable_patcher_checks": 11,
+  "apple_silicon_asan_ubsan_host_suite": "passed",
+  "real_source_ipa_guards": "passed",
+  "uikit_ru_en_fixture": "passed after retrying a simulator installation timeout",
+  "rebuilt_components": {
+    "Payload/Spotify.app/Spotify": {
+      "matches_reference_v4": true,
+      "sha256": "b4230eafbdd267a84a283ce56717c368fa310b9d8cab97be5bc58c874fa94da5"
+    },
+    "Payload/Spotify.app/Frameworks/EeveeSpotify.dylib": {
+      "matches_reference_v4": true,
+      "sha256": "e3d73a4c5a312d0defbf35261d223cdda6347f4252e4d1778f93ae192056bded"
+    },
+    "Payload/Spotify.app/Frameworks/SpotifyAudioProbe.dylib": {
+      "matches_reference_v4": true,
+      "sha256": "28966cac65db96040a4434e5a6d0bf5896ec028842684dc7bd8fb6d2f098d7dd"
+    }
+  },
+  "scope": "Local rebuild and regression checks. Reference v4 physical-device observations and remaining limitations are documented in docs/native-downloads.md. This does not assert a new physical-device test of the repository rebuild or full upstream source rebuild."
+}

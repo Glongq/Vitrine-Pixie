@@ -115,7 +115,8 @@
 }
 - (void)apply:(NSData *)data progress:(BOOL)progress {[self apply:data progress:progress live:NO];}
 - (void)apply:(NSData *)data progress:(BOOL)progress live:(BOOL)live {[self apply:data progress:progress live:live owners:nil];}
-- (void)apply:(NSData *)data progress:(BOOL)progress live:(BOOL)live owners:(NSDictionary *)owners {
+- (void)apply:(NSData *)data progress:(BOOL)progress live:(BOOL)live owners:(NSDictionary *)owners {[self apply:data progress:progress live:live owners:owners epoch:0];}
+- (void)apply:(NSData *)data progress:(BOOL)progress live:(BOOL)live owners:(NSDictionary *)owners epoch:(NSUInteger)streamEpoch {
     NSArray *envelope=SAPProtoFields(data);if(!envelope)return;
     if(!progress && SAPProtoNumber(envelope,2,0)) {self.error=@"Spotify could not read the album download states.";[self publish];return;}
     BOOL changed=NO;NSMutableSet *advanced=[NSMutableSet set];
@@ -124,6 +125,8 @@
         NSString *uri=progress?SAPProtoString(entry,1):SAPProtoString(info,1);if(!uri || !info || !self.states[uri])continue;
         SAPArtistAlbumOperation *operation=self.operations[uri];
         if(operation.paused || ([self.queuedURIs containsObject:uri] && ![self.readyItems[uri]count]) || (owners && operation && owners[uri]!=operation))continue;
+        // A stream opened before this AddDownload may still carry a pre-Add snapshot.
+        if(streamEpoch && operation.downloadSent && operation.submittedWatchEpoch>=streamEpoch)continue;
         NSMutableDictionary *raw=[self stateFor:uri];NSDictionary *before=[raw copy];
         if(progress) {
             uint64_t done=SAPProtoNumber(info,3,0),bytes=SAPProtoNumber(info,4,0);
@@ -152,13 +155,13 @@
             raw[@"native_state"]=@(code);raw[@"percent"]=@(floatNumber(info,3));
             if(code==3 || code==1 || code==0)raw[@"native_downloading"]=@NO;
             if(code==3 || code==2 || code==4 || code==5)[raw removeObjectForKey:@"native_cancelled"];
-            BOOL forceDisable=[self.forcedOfflineStops containsObject:uri];
+            BOOL forceDisable=[self.forcedOfflineStops containsObject:uri] || [raw[@"stop_removal_pending"]boolValue];
             if((code==3 && !forceDisable) || (code==1 && !forceDisable && ![self.queuedURIs containsObject:uri] && !(operation && !operation.downloadSent)) || (code==0 && [raw[@"stopping"]boolValue] && [self.stopSentURIs containsObject:uri])) {
                 if(code==0)raw[@"stop_confirmed"]=@YES;
                 raw[@"local_active"]=@NO;raw[@"stopping"]=@NO;raw[@"download_requested"]=@NO;
                 raw[@"local_phase"]=code==1?@"failed":@"idle";
                 if(code==1)raw[@"error"]=@"Spotify reported a download error. Tap to retry.";else[raw removeObjectForKey:@"error"];
-                if(!operation){[self.stopOperations removeObject:uri];[self.stopTokens removeObjectForKey:uri];[self.stopSentURIs removeObject:uri];[self.forcedOfflineStops removeObject:uri];}
+                if(!operation){if(code==0){[raw removeObjectForKey:@"stop_removal_pending"];[raw removeObjectForKey:@"stop_confirmed"];}[self.stopOperations removeObject:uri];[self.stopTokens removeObjectForKey:uri];[self.stopSentURIs removeObject:uri];[self.forcedOfflineStops removeObject:uri];}
             }
             if(operation && live) {
                 if(activeNative(raw))operation.sawNativeActive=YES;
@@ -196,6 +199,13 @@
         if(self.operations.count && self.watchDeadline){dispatch_source_cancel(self.watchDeadline);self.watchDeadline=nil;}
         if(!self.operations.count && !self.queue.count && !self.watchDeadline){NSUInteger generation=self.watchEpoch;__weak typeof(self) weak=self;self.watchDeadline=SAPScheduleDeadline(dispatch_get_main_queue(),900,^{typeof(self) s=weak;if(s && s.watchEpoch==generation)[s pauseWork:@"Live status updates stopped after 15 minutes. Reopen this list to refresh."];});}return;
     }
+    // With many direct releases the owner set changes on every preparation and
+    // submission. Batch those renewals; each stream already rejects owners it
+    // was not opened for, and repairs or the very first streams start at once.
+    if(!self.watchRenewalForced && !self.repairing && self.watchCancels.count) {
+        BOOL direct=NO;for(SAPArtistAlbumOperation *owned in self.operations.allValues)if(SAPArtistDirectURI(owned.uri)){direct=YES;break;}
+        if(direct){[self scheduleWatchRenewal];return;}
+    }
     // Queue replacement selection before releasing the old stream leases.
     // Changing the epoch first still rejects every previous callback, including
     // pre-Add snapshots when the URI/operation ownership set did not change.
@@ -207,7 +217,8 @@
     // a state-only context lease for the same URI can yield competing snapshots.
     NSMutableArray *passiveURIs=[uris mutableCopy];[passiveURIs removeObjectsInArray:ownedURIs];
     NSUInteger stateStreams=(passiveURIs.count+63)/64,regularStreams=stateStreams+(uris.count+63)/64;
-    for(NSUInteger index=0;index<regularStreams+!!ownedURIs.count;index++)[self.watchPendingFirst addObject:@(index)];
+    NSUInteger ownedStreams=(ownedURIs.count+63)/64;
+    for(NSUInteger index=0;index<regularStreams+ownedStreams;index++)[self.watchPendingFirst addObject:@(index)];
     for(NSNumber *isProgress in @[@NO,@YES]) {
         BOOL progress=isProgress.boolValue;NSArray *watched=progress?uris:passiveURIs;
         for(NSUInteger offset=0;offset<watched.count;offset+=64) {
@@ -217,22 +228,23 @@
                 typeof(self) session=weak;if(!session || session.watchEpoch!=epoch)return;
                 NSArray *fields=SAPProtoFields(data);
                 if(error.length || !fields || (!progress && SAPProtoNumber(fields,2,0))){[session repairWatch:error.length?error:@"Spotify sent an invalid album status stream response."];return;}
-                [session.watchPendingFirst removeObject:identifier];[session apply:data progress:progress live:YES owners:owners];
+                [session.watchPendingFirst removeObject:identifier];[session apply:data progress:progress live:YES owners:owners epoch:epoch];
                 if(session.watchEpoch==epoch)[session finishRepair];
             });if(cancel)[self.watchCancels addObject:cancel];
         }
     }
-    if(ownedURIs.count){
-        NSNumber *identifier=@(regularStreams);
+    for(NSUInteger offset=0;offset<ownedURIs.count;offset+=64){
+        NSArray *ownedChunk=[ownedURIs subarrayWithRange:NSMakeRange(offset,MIN((NSUInteger)64,ownedURIs.count-offset))];
+        NSNumber *identifier=@(regularStreams+offset/64);
         // Match the native album page's default-policy observation, only for
         // submitted contexts. Passive catalog entries remain state-only.
-        dispatch_block_t cancel=SAPSubscribeReadOnlyService(offlineService,@"SubscribeContexts",urisRequest(ownedURIs,3),^(NSData *data,NSString *error){
+        dispatch_block_t cancel=SAPSubscribeReadOnlyService(offlineService,@"SubscribeContexts",urisRequest(ownedChunk,3),^(NSData *data,NSString *error){
             typeof(self) s=weak;if(!s || s.watchEpoch!=epoch)return;
             NSArray *fields=SAPProtoFields(data);
             if(error.length || !fields || SAPProtoNumber(fields,2,0)){[s repairWatch:error.length?error:@"Spotify sent an invalid active context response."];return;}
-            [s.watchPendingFirst removeObject:identifier];[s apply:data progress:NO live:YES owners:owners];if(s.watchEpoch==epoch)[s finishRepair];
+            [s.watchPendingFirst removeObject:identifier];[s apply:data progress:NO live:YES owners:owners epoch:epoch];if(s.watchEpoch==epoch)[s finishRepair];
         });if(cancel)[self.watchCancels addObject:cancel];
-        SAP_JOURNAL_ACTION(@"artist_native_context_observation",@{@"uris":ownedURIs,@"policy":@"native_default",@"max_owned_contexts":@2,@"mutations_sent":@0});
+        SAP_JOURNAL_ACTION(@"artist_native_context_observation",@{@"uris":ownedChunk,@"policy":@"native_default",@"owned_contexts":@(ownedURIs.count),@"mutations_sent":@0});
     }
     SAP_JOURNAL_ACTION(@"artist_observation_watch_replaced",@{@"generation":@(epoch),@"previous_streams":@(oldCancels.count),@"replacement_streams":@(self.watchCancels.count),@"reason":self.repairing?@"bounded_repair":@"ownership_or_submission_changed",@"selection_queued_before_cancel":@YES});
     for(dispatch_block_t cancel in oldCancels)cancel();

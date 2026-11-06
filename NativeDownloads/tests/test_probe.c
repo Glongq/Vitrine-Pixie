@@ -1,6 +1,7 @@
 #include "Diagnostics.h"
 #include "AudioProbeBackend.h"
 #include <assert.h>
+#include <dlfcn.h>
 #include <math.h>
 #include <stdio.h>
 #include <string.h>
@@ -48,6 +49,8 @@ static void invoke(float *samples, UInt32 frames) {
 }
 
 int main(void) {
+    // The removed manual-mute API must no longer be callable by clients.
+    assert(dlsym(RTLD_DEFAULT, "SpotifyAudioProbeMuteForSeconds") == NULL);
     SAPDiagnosticsSetEnabled(true);
 
     SAPTestUseBackend((SAPBackend){set, get, start, stop, dispose, describe});
@@ -65,10 +68,6 @@ int main(void) {
     SAPSnapshot snapshot; SpotifyAudioProbeReadSnapshot(&snapshot);
     assert(snapshot.pcmConfirmed && snapshot.callbacks == 1 && snapshot.frames == 128 && snapshot.pcmBytes == 1024);
     assert(snapshot.nonzeroCallbacks == 1 && snapshot.sampleRate == 48000 && snapshot.channels == 2);
-    assert(SpotifyAudioProbeMuteForSeconds(2));
-    invoke(samples, 128);
-    for (unsigned i = 0; i < 256; ++i) assert(samples[i] == 0);
-    assert(SpotifyAudioProbeMuteForSeconds(0));
     SpotifyAudioProbeSetObserver(scale);
     invoke(samples, 128);
     assert(observerCalls == 1 && samples[0] == 0.25f);
@@ -76,7 +75,7 @@ int main(void) {
     invoke(samples, 128);
     assert(observerCalls == 1);
     SpotifyAudioProbeReadSnapshot(&snapshot);
-    assert(snapshot.callbackErrors == 1 && originalCalls == 4 && snapshot.mutedCallbacks == 1);
+    assert(snapshot.callbackErrors == 1 && originalCalls == 3);
     renderResult = 0;
     SpotifyAudioProbeSetObserver(NULL);
     AURenderCallbackStruct previous = installed;
@@ -97,7 +96,7 @@ int main(void) {
     assert(snapshot.lastCallbackScope == kAudioUnitScope_Global && snapshot.callbackAttempts == 3);
     assert(snapshot.setPropertyCalls == 3 && snapshot.pcmConfirmed);
 
-    // Manual mute and the PCM observer remain available with diagnostics off,
+    // The PCM observer remains available with diagnostics off,
     // while sample metering and per-buffer counters remain stopped.
     SAPDiagnosticsSetEnabled(false);
     SpotifyAudioProbeReadSnapshot(&snapshot);uint64_t beforeCallbacks=snapshot.callbacks,beforeBytes=snapshot.pcmBytes;
@@ -105,12 +104,14 @@ int main(void) {
     SpotifyAudioProbeReadSnapshot(&snapshot);
     assert(snapshot.pcmConfirmed && snapshot.callbacks==beforeCallbacks && snapshot.pcmBytes==beforeBytes);
     for(unsigned i=0;i<256;i++)assert(samples[i]==0.5f);
-    assert(SpotifyAudioProbeMuteForSeconds(2));invoke(samples,128);
-    for(unsigned i=0;i<256;i++)assert(samples[i]==0);
-    assert(SpotifyAudioProbeMuteForSeconds(0));
+    SpotifyAudioProbeSetObserver(scale);
+    invoke(samples,128);
+    assert(observerCalls == 2);
+    for(unsigned i=0;i<256;i++)assert(samples[i]==0.25f);
+    SpotifyAudioProbeSetObserver(NULL);
     SpotifyAudioProbeReadSnapshot(&snapshot);assert(snapshot.callbacks==beforeCallbacks && snapshot.pcmBytes==beforeBytes);
     SAPDiagnosticsSetEnabled(true);invoke(samples,128);SpotifyAudioProbeReadSnapshot(&snapshot);
     assert(snapshot.callbacks==beforeCallbacks+1 && snapshot.pcmBytes==beforeBytes+1024);
-    puts("PASS: diagnostics OFF preserves playback, observer and manual mute; counters stop and resume");
-    puts("PASS: callback forwarding, original getter, untouched passthrough, PCM detection, mute, mutable observer, errors and replacement lifetime");
+    puts("PASS: diagnostics OFF preserves playback and observer; counters stop and resume");
+    puts("PASS: callback forwarding, original getter, untouched passthrough, PCM detection, mutable observer, errors and replacement lifetime");
 }

@@ -5,7 +5,7 @@ Run from the project root:
 ```sh
 python3 NativeDownloads/tools/test.py
 python3 NativeDownloads/tools/test.py --suite transport --suite session --suite playlists
-python3 NativeDownloads/tools/test.py --fixture offline_devices_vitrine_auth
+python3 NativeDownloads/tools/test.py --fixture offline_devices_eevee_auth
 python3 NativeDownloads/tools/test.py --list
 ```
 
@@ -27,6 +27,12 @@ recorded in the result. No simulator or iPhone is launched.
 
 ## Suites
 
+- **library**: downloaded membership validation, cached metadata reuse, cancelled
+  and superseded scans, empty/error snapshots, selected deletion, packaging and
+  export. `offline_library_refresh` executes the actual controller state/lifecycle
+  methods with Foundation-only presentation boundaries, including immediate
+  cached entry, preserved selection and child pages after metadata recovery.
+  It does not render UIKit or verify physical-device scrolling.
 - **audio**: production callback forwarding, PCM/mute behavior and AV hooks with
   diagnostics toggled. WAV recording sources were removed; the obsolete capture
   fixture is not an active target.
@@ -41,8 +47,14 @@ recorded in the result. No simulator or iPhone is launched.
 - **playlists**: production reader/workflow/item observation with a controlled
   native service; ordering, incremental additions, duplicate URI exclusion,
   artist-scoped stop/cancel and observation cleanup.
+- **native download quality**: exact stock download enum, loaded-preference
+  deferral, persisted Normal offer/High suppression and one-time tap navigation;
+  isolated child processes verify that later entries do not reread preferences.
+- **extendable exports**: unique URI append during preparation/conversion/package,
+  stable output order, unchanged packaging choice, stale package cancellation,
+  preserved in-flight progress and selected artists gaining a new native track.
 - **devices**: source comparison, reviewed enable/remove operations, malformed
-  HTTP and readback. The extra `offline_devices_vitrine_auth` fixture compiles the
+  HTTP and readback. The extra `offline_devices_eevee_auth` fixture compiles the
   actual Swift `SpriteAuthentication` bridge; its seed contains test-only values.
   Every management HTTP request is intercepted by NSURLProtocol.
 - **diagnostics**: player trace, journal state/reset/off behavior, trace rotation,
@@ -58,6 +70,12 @@ need a separately supplied IPA must explicitly report their missing fixture.
 The UIKit fixture remains a separate opt-in development tool and is not run here.
 
 ## Additional contracts and compile-only UIKit checks
+
+`export_artwork_cache` executes the actual export-artwork loader function with
+Foundation queues/cache and host doubles only for native images and UIKit JPEG.
+It covers repeated immutable album covers, distinct identities, cached/uncached
+cancellation, failure retry and mutable/malformed URI bypass under ASan/UBSan.
+It does not launch a device or measure native image-service/JPEG performance.
 
 `journal_lazy_payload` verifies that the production optional journal macro does
 not evaluate event names or facts while diagnostics are off, evaluates them once
@@ -75,7 +93,7 @@ python3 Tests/PlaylistActionRow/test.py --compile-only
 Both commands default to compile-only and produce fresh root `outputs` folders.
 The settings command builds both settings and artist/playlist-picker fixtures
 using the target's full `artist_ui` group. The action-row fixture compiles the
-actual Vitrine artist-download bridge and identity adapter; follow state is supplied
+actual Eevee artist-download bridge and identity adapter; follow state is supplied
 by an explicitly unavailable test provider. It does not prove native Spotify
 follow-provider behavior. Runtime access requires explicit `--run`.
 

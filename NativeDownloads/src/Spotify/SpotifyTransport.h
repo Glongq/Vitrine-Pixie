@@ -12,6 +12,17 @@ dispatch_queue_t SAPTransportWorker(void);
 BOOL SAPOnTransportWorker(void);
 void SAPRememberTransport(id value, BOOL provided, BOOL proven);
 NSArray *SAPTransportCandidates(void);
+// Read routes are learned from actual responses, independently of diagnostic
+// logging. Exact RPC evidence wins over service evidence; endpoints stay weak.
+void SAPRememberReadOnlyTransport(id endpoint,NSString *service,NSString *method);
+NSArray *SAPTransportCandidatesForRead(NSString *service,NSString *method);
+#ifdef SAP_TESTING
+// Fixtures only: without a directory nothing is persisted. Reset forgets all
+// in-memory routes, so the next read reloads from disk like a fresh launch.
+void SAPReadRouteStoreResetForTesting(NSString *directory);
+void SAPReadRouteStoreFlushForTesting(void);
+NSUInteger SAPReadRouteRememberCountForTesting(void);
+#endif
 void SAPTransportVerifiedEndpoints(id __strong *proven,id __strong *bridge);
 id SAPProvenTransport(void);
 id SAPCurrentTransport(void);

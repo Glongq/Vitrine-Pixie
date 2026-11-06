@@ -411,6 +411,23 @@ BOOL SAPSubmitNativeAlbumDownload(NSString *albumURI,NSArray<NSString *> *trackU
         @"track_count":@(trackURIs.count),@"download_completion_confirmed":@NO,@"error":failure?:@""});
     if(reason)*reason=failure;return returned;
 }
+BOOL SAPResetNativeEntityDownload(NSString *uri,NSString **reason) {
+    if(!NSThread.isMainThread){if(reason)*reason=@"The native reset action requires the main thread.";return NO;}
+    SAPInstallNativeOffline();
+    id wrapper=nativeWrapper;
+    SEL selector=NSSelectorFromString(@"resetEntityOfflineAvailabilityWithURL:");
+    NSURL *url=[uri isKindOfClass:NSString.class]?[NSURL URLWithString:uri]:nil;
+    Method method=class_getInstanceMethod(object_getClass(wrapper),selector);char type[16]={0};
+    if(!wrapper||![uri hasPrefix:@"spotify:album:"]||uri.length!=36||!url||!method||method_getNumberOfArguments(method)!=3) {
+        if(reason)*reason=@"The native album reset method is unavailable.";return NO;
+    }
+    method_getReturnType(method,type,sizeof(type));BOOL valid=type[0]=='v';
+    method_getArgumentType(method,2,type,sizeof(type));valid=valid&&type[0]=='@';
+    if(!valid){if(reason)*reason=@"The native album reset signature does not match.";return NO;}
+    @try {((void(*)(id,SEL,id))objc_msgSend)(wrapper,selector,url);}
+    @catch(NSException *exception){if(reason)*reason=exception.name;return NO;}
+    return YES;
+}
 void SAPPrepareNativeOffline(BOOL (^stillRequested)(void),void (^completion)(BOOL,NSString *)) {
     SAPInstallNativeOffline();
     SAPNativePreparation *operation=[SAPNativePreparation new];operation.completion=completion;operation.traceOperation=SAPTraceCurrentOperation();

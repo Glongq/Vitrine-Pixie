@@ -134,7 +134,7 @@ class ChromeHost:UIViewController {
      }}
      self.write("PASS: every action remains tappable after repeated reuse of the disabled mode row")
      let modeFooter=page.tableView.dataSource!.tableView?(page.tableView,titleForFooterInSection:1) ?? ""
-     precondition(modeFooter.contains("5 licenses = up to 5 devices with offline music."))
+     precondition(!modeFooter.contains("5 licenses = up to 5 devices with offline music."))
      precondition(!modeFooter.lowercased().contains("recovery"))
      let refreshCell=page.tableView.dataSource!.tableView(page.tableView,cellForRowAt:IndexPath(row:1,section:1))
      precondition((refreshCell.contentConfiguration as? UIListContentConfiguration)?.text=="Refresh quotas and licenses")

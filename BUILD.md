@@ -1,4 +1,4 @@
-# Build Vitrine beta 16 / Spotify 9.1.90 / Pixie 1.3
+# Build Vitrine beta 16 / Spotify 9.1.90 / Pixie 1.4
 
 Requires macOS, full Xcode, Python 3 and Theos for rebuilding Vitrine. Follow
 Vitrine's own dependency instructions. This repository is a source overlay;

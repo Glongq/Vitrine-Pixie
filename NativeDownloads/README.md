@@ -1,10 +1,10 @@
-# Pixie Manager 1.3 — Vitrine / Spotify 9.1.90
+# Pixie Manager 1.4 — Vitrine / Spotify 9.1.90
 
 The current companion is organized by responsibility. Its exact Spotify identity
-and 51 production translation units are declared in
+and 88 production translation units are declared in
 [targets/spotify-9.1.90.json](targets/spotify-9.1.90.json).
 
-- [Build instructions](../BUILD.md)
+- [Build instructions](../BUILD-pixie-v1.3.md)
 - [Integration and file map](docs/INTEGRATION-MAP.md)
 - [Data and lifetime contracts](docs/CONTRACTS.md)
 - [Host fixture runner](tests/README.md)
@@ -22,6 +22,9 @@ python3 NativeDownloads/tools/test.py
 
 Settings/artist fixtures compile without launching by default. Vitrine keeps its
 own authentication provider, SGSpclientHeaders. Diagnostics are optional and WAV
-capture is removed. Music remains in Spotify; ordinary audio-file export is not
-a supported feature. The current target is the companion IPA; older jailbreak
+capture is removed. Native downloads remain inside Spotify. The Export module additionally turns downloaded tracks into ordinary audio files
+(M4A by default, Ogg optional): it reads Spotify's offline cache, validates the
+audio and adds cover art and tags. Use the Downloaded tracks manager or the
+native share menu to save files outside the app.
+Key state is process-only; a usable key and complete cache must be available. The current target is the companion IPA; older jailbreak
 releases are separate and were not rebuilt by this source update.

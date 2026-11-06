@@ -7,3 +7,6 @@ NSData *SAPProtoInteger(unsigned number, uint64_t value);
 uint64_t SAPProtoNumber(NSArray<NSDictionary *> *fields, unsigned number, uint64_t fallback);
 NSData *SAPProtoData(NSArray<NSDictionary *> *fields, unsigned number);
 NSString *SAPProtoString(NSArray<NSDictionary *> *fields, unsigned number);
+
+// Decode protobuf sint fields used by the audio export metadata.
+int64_t SAPProtoSInt(NSArray<NSDictionary *> *fields,unsigned number,int64_t fallback);

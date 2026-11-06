@@ -31,7 +31,7 @@ def compile_fixture(name, out, sdk, target):
     includes = ["-I" + str(p) for p in include_directories()]
     common = ["xcrun", "clang", "-target", target, "-isysroot", sdk, "-fobjc-arc", "-std=gnu11", "-DSAP_TESTING", *includes]
     if name == "settings":
-        sources = [resolve_source(s) for s in ("PixieManagerSettings.m", "DiagnosticsPreferences.m", "Localization.m", "DiagnosticTrace.m", "NativeKeyTrace.m", "WireProto.m")]
+        sources = [resolve_source(s) for s in ("PixieManagerSettings.m", "PixiePageController.m", "DiagnosticsPreferences.m", "Localization.m", "DiagnosticTrace.m", "NativeKeyTrace.m", "WireProto.m")]
         sources.extend((ROOT / "tests/trace_platform_stub.m", ROOT / "tests/SettingsFixtureActions.m"))
         objects = []
         for source in sources:

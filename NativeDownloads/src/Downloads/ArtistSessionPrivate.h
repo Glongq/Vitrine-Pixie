@@ -20,6 +20,18 @@ extern const double SAPArtistWorkTimeoutSeconds;
 extern const double SAPArtistRepairTimeoutSeconds;
 extern const double SAPArtistRecoverySettleSeconds;
 #endif
+// Albums and singles follow Spotify's own manual path: every selected release is
+// prepared and sent as soon as it is ready, and Spotify schedules the transfers.
+// Preparation (state read, library membership) stays bounded to a few releases
+// at a time. Playlists keep the ordered two-slot window their feeds rely on.
+#ifdef SAP_TESTING
+extern BOOL SAPArtistDirectAlbumSubmission;
+#else
+static const BOOL SAPArtistDirectAlbumSubmission=YES;
+#endif
+static const NSUInteger SAPArtistPreparationWindow=4;
+static const NSUInteger SAPArtistSubmittedLimit=256;
+static inline BOOL SAPArtistDirectURI(NSString *uri){return SAPArtistDirectAlbumSubmission && SAPIsAlbumURI(uri);}
 static inline NSArray *commandFields(NSData *data){
     NSArray *fields=SAPProtoFields(data);if(!fields)return nil;
     for(NSDictionary *field in fields)if([field[@"number"]unsignedIntValue]==1 && [field[@"wire"]unsignedIntValue]!=0)return nil;
@@ -102,6 +114,11 @@ static inline NSComparisonResult compareQueueOrder(NSDictionary *a,NSDictionary 
 @property(nonatomic,strong) dispatch_source_t recoveryTimer;
 @property(nonatomic) NSUInteger recoveryEpoch;
 @property(nonatomic) double libraryDeadline;
+@property(nonatomic) double workDeadlineArmedAt;
+@property(nonatomic) NSUInteger workDeadlineOperationEpoch;
+// Watch generation current when AddDownload was sent; earlier streams cannot
+// describe this attempt.
+@property(nonatomic) NSUInteger submittedWatchEpoch;
 @end
 
 @interface SAPArtistDownloadSession : NSObject
@@ -124,6 +141,7 @@ static inline NSComparisonResult compareQueueOrder(NSDictionary *a,NSDictionary 
 @property(atomic) NSUInteger prepareEpoch;
 @property(nonatomic) BOOL prepared,preparing,watchSuspended,filling,admitting;
 @property(nonatomic) BOOL repairing,repairAwaitingStreams,watchNeedsRenewal,observationPaused;
+@property(nonatomic) BOOL watchRenewalScheduled,nextScheduled,watchRenewalForced;
 @property(nonatomic,copy) NSString *error;
 @end
 
@@ -163,6 +181,7 @@ static inline NSComparisonResult compareQueueOrder(NSDictionary *a,NSDictionary 
 - (void)apply:(NSData *)data progress:(BOOL)progress;
 - (void)apply:(NSData *)data progress:(BOOL)progress live:(BOOL)live;
 - (void)apply:(NSData *)data progress:(BOOL)progress live:(BOOL)live owners:(NSDictionary *)owners;
+- (void)apply:(NSData *)data progress:(BOOL)progress live:(BOOL)live owners:(NSDictionary *)owners epoch:(NSUInteger)streamEpoch;
 - (NSArray *)desiredWatchURIs;
 - (void)startWatch;
 - (void)loadStates:(NSArray *)uris owner:(NSString *)owner;
@@ -173,6 +192,8 @@ static inline NSComparisonResult compareQueueOrder(NSDictionary *a,NSDictionary 
 - (void)next;
 - (void)resumePausedOperationsExcept:(NSSet *)excluded;
 - (void)pumpAdmissions;
+- (void)scheduleNext;
+- (void)scheduleWatchRenewal;
 @end
 
 @interface SAPArtistDownloadSession (Cancellation)

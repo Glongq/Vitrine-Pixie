@@ -53,11 +53,40 @@ int main(int argc,const char **argv){@autoreleasepool{
         puts("PASS reset while OFF deletes old files without enabling or creating the trace queue");return 0;
     }
     SAPTraceSetEnabled(true,"test_start");
+    if([scenario isEqual:@"noise"]){
+        FakeEndpoint *endpoint=FakeEndpoint.new;NSString *offline=@"spotify.offline_esperanto.proto.Offline";
+        for(unsigned i=0;i<5;i++)assert(SAPTraceRPCBegin(@"spotify.connectivity.traffic.esperanto.proto.TrafficAdapter",i?@"listenToTrafficEvents":@"notifyTrafficEvent",NSData.data,@"spotify",endpoint,i!=0)==nil);
+        assert([SAPTraceReport()[@"suppressed_traffic_adapter_calls"]unsignedLongLongValue]==5&&[SAPTraceReport()[@"rpc_slots_in_use"]unsignedIntValue]==0);
+        NSData *a=SAPProtoInteger(1,5),*b=SAPProtoInteger(1,6);
+        SAPTraceRPC *progress=SAPTraceRPCBegin(offline,@"SubscribeContextsProgress",NSData.data,@"spotify",endpoint,YES);
+        SAPTraceRPC *other=SAPTraceRPCBegin(offline,@"SubscribeContextsProgress",NSData.data,@"spotify",endpoint,YES);
+        SAPTraceRPC *plain=SAPTraceRPCBegin(offline,@"SubscribeItems",NSData.data,@"spotify",endpoint,YES);
+        for(NSData *d in @[a,a,b,b,a])SAPTraceRPCReply(progress,d);          // written: a,b,a
+        SAPTraceRPCReply(other,a);SAPTraceRPCReply(other,a);                  // other stream owns its own baseline: a, then repeat
+        SAPTraceRPCReply(plain,a);SAPTraceRPCReply(plain,a);                  // non-progress streams are never deduplicated
+        SAPTraceTestDrain();
+        NSArray *events=SAPTraceExport()[@"events"];
+        NSUInteger progressCallbacks=0,otherCallbacks=0,plainCallbacks=0;
+        for(NSDictionary *e in events){if(![e[@"stage"]isEqual:@"callback"])continue;
+            if([e[@"operation_id"]isEqual:@(progress.identifier)])progressCallbacks++;
+            if([e[@"operation_id"]isEqual:@(other.identifier)])otherCallbacks++;
+            if([e[@"operation_id"]isEqual:@(plain.identifier)])plainCallbacks++;}
+        assert(progressCallbacks==3&&otherCallbacks==1&&plainCallbacks==2);
+        assert([SAPTraceReport()[@"suppressed_identical_progress_callbacks"]unsignedLongLongValue]==3);
+        assert(!SAPTraceRepeatedProgressPayload(@"observation",@"SubscribeTotalProgress",7,a)&&SAPTraceRepeatedProgressPayload(@"observation",@"SubscribeTotalProgress",7,a));
+        assert(!SAPTraceRepeatedProgressPayload(@"observation",@"SubscribeTotalProgress",7,b)&&!SAPTraceRepeatedProgressPayload(@"observation",@"SubscribeTotalProgress",8,b));
+        assert(!SAPTraceRepeatedProgressPayload(@"observation",@"GetItems",7,a)&&!SAPTraceRepeatedProgressPayload(@"observation",@"GetItems",7,a));
+        NSError *error=nil;assert(SAPTraceReset(&error)&&SAPTraceIsActive()&&[SAPTraceReport()[@"suppressed_identical_progress_callbacks"]unsignedLongLongValue]==0);
+        assert(!SAPTraceRepeatedProgressPayload(@"observation",@"SubscribeTotalProgress",7,b)); // a new log segment never inherits an old baseline
+        SAPTraceSetEnabled(false,"test_end");SAPTraceTestDrain();assert(!SAPTraceRepeatedProgressPayload(@"observation",@"SubscribeTotalProgress",7,b));
+        puts("PASS TrafficAdapter calls and byte-identical progress repeats are counted, not written; any changed byte, other streams, other methods and new segments are still recorded");return 0;
+    }
     if([scenario isEqual:@"reset"]){
         uint64_t oldSegment=SAPTraceGeneration();
         SAPTraceRPC *old=SAPTraceRPCBegin(@"old.service",@"Subscribe",NSData.data,@"test",FakeEndpoint.new,YES);
         for(unsigned i=0;i<100;i++)SAP_TRACE("test","old_history",0,@{@"i":@(i)});
         NSError *error=nil;assert(SAPTraceReset(&error)&&!error&&SAPTraceIsActive());
+        SAPTraceEventAtGeneration("test","stale_inspection",0,@{@"stale":@YES},oldSegment);
         SAPTraceRPCReply(old,NSData.data);SAP_TRACE("test","fresh_history",0,@{@"fresh":@YES});SAPTraceTestDrain();
         NSArray *fresh=SAPTraceExport()[@"events"];assert(fresh.count==2&&count(fresh,@"session",@"log_reset")==1&&count(fresh,@"test",@"fresh_history")==1);
         for(NSDictionary *event in fresh)assert([event[@"segment"]unsignedLongLongValue]>oldSegment);

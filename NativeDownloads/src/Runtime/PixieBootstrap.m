@@ -17,9 +17,12 @@
 #import "DiagnosticTrace.h"
 #import "TracePlatform.h"
 #import "NativeKeyTrace.h"
+#import "TrackExport.h"
+#import "NativeShareHooks.h"
 #import "PlayerTrace.h"
 #import "NativeErrorLog.h"
 #import "BuildIdentity.h"
+#import "NativeDownloadQuality.h"
 #import "ProcessScope.h"
 #if SAP_JAILBREAK
 #import "JailbreakSupport.h"
@@ -35,6 +38,7 @@ __attribute__((constructor)) static void SAPLoad(void) {
 #else
         bool nativeReady=true;
 #endif
+        SAPInstallNativeDownloadQualityObservation();
         SAPDiagnosticsInitialize();
         if(SAPDiagnosticsEnabled()){SAPPlayerTraceSetActive(YES);SAPNativeErrorLogSetActive(YES);}
         [NSNotificationCenter.defaultCenter addObserverForName:SAPDiagnosticsDidChangeNotification object:nil queue:nil usingBlock:^(NSNotification *note){
@@ -47,9 +51,10 @@ __attribute__((constructor)) static void SAPLoad(void) {
         SAPInstallOfflineConfig();
         SAPInstallNativeOffline();
         SAPInstallTrackDownloader();
+        SAPSetOfflineKeySuccessObserver(SAPExportObserveOfflineSuccess);
         }
         SAP_TRACE("startup","pixie_hooks_installed",0,@{@"offline_flags":SAPOfflineFlagsReport(),@"offline_config":SAPOfflineConfigReport(),@"native_offline":SAPNativeOfflineReport(),@"transport":SAPTrackDownloadReport(),@"hooks":SAPTraceHookManifest()});
-        dispatch_async(dispatch_get_main_queue(), ^{ SAPInstallDownloadSettings(); });
+        dispatch_async(dispatch_get_main_queue(), ^{ SAPInstallDownloadSettings();SAPInstallNativeShareHooks(); });
         [NSNotificationCenter.defaultCenter addObserverForName:UIApplicationDidFinishLaunchingNotification object:nil queue:NSOperationQueue.mainQueue usingBlock:^(NSNotification *note){SAPInstallDownloadSettings();}];
     }
 }

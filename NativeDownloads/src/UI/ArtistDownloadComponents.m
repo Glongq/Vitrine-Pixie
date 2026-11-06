@@ -2,6 +2,7 @@
 #import "ArtistArtworkLoader.h"
 #import <objc/runtime.h>
 #import <QuartzCore/QuartzCore.h>
+#import "ProgressAnimation.h"
 
 UIImage *SAPArtistArtworkPlaceholder(void) {
     static UIImage *image;static dispatch_once_t once;dispatch_once(&once,^{
@@ -33,8 +34,12 @@ UIImage *SAPArtistArtworkPlaceholder(void) {
     return self;
 }
 - (void)updateDownloaded:(NSUInteger)downloaded total:(NSUInteger)total progress:(double)progress {
-    [CATransaction begin];[CATransaction setDisableActions:YES];_progressRing.strokeEnd=MIN(1,MAX(0,progress));[CATransaction commit];
+    SAPSetProgressRing(_progressRing,progress,self.window!=nil && !UIAccessibilityIsReduceMotionEnabled());
     self.accessibilityLabel=[NSString stringWithFormat:@"Partially downloaded, %lu of %lu tracks",(unsigned long)downloaded,(unsigned long)total];
+}
+- (void)didMoveToWindow {
+    [super didMoveToWindow];
+    if(!self.window)SAPSetProgressRing(_progressRing,_progressRing.strokeEnd,NO);
 }
 @end
 
@@ -74,7 +79,7 @@ UIImageView *SAPArtistStateIcon(NSString *symbol,UIColor *color,NSString *label)
     dispatch_block_t cancel=self.cancelArtwork;self.cancelArtwork=nil;
     if(cancel){cancel();objc_setAssociatedObject(self,&SAPArtistArtworkURLKey,nil,OBJC_ASSOCIATION_COPY_NONATOMIC);}
 }
-- (void)prepareForReuse {[super prepareForReuse];[self cancelArtworkLoad];self.renderedRelease=nil;self.renderedState=nil;}
+- (void)prepareForReuse {[super prepareForReuse];[self cancelArtworkLoad];self.progressIndicator=nil;self.renderedRelease=nil;self.renderedState=nil;}
 - (void)dealloc {if(_cancelArtwork)_cancelArtwork();}
 - (UIView *)indicatorForState:(NSDictionary *)state {
     NSString *kind=state[@"state"];

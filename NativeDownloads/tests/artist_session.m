@@ -7,6 +7,7 @@
 void SAPArtistSessionSetWorkTimeoutForTesting(double seconds);
 void SAPArtistSessionSetRepairTimeoutForTesting(double seconds);
 void SAPArtistSessionSetRecoverySettleForTesting(double seconds);
+void SAPArtistSessionSetDirectAlbumSubmissionForTesting(BOOL enabled);
 #endif
 
 // Fixture transport. AddDownload and RemoveDownload replies are held so each
@@ -17,6 +18,8 @@ static NSMutableDictionary *addReplies,*removeReplies;
 static NSMutableArray *addSubmissionOrder,*heldPreparations;
 static NSMutableSet *submittedUnfinishedURIs;
 static NSUInteger peakSubmittedUnfinished;
+// The ordered-window suite keeps its original bounds; the direct suite raises them.
+static NSUInteger fixtureSubmittedLimit=2,fixtureNativeContextLimit=2,entityReads;
 static NSString *neverInvokedURI,*neverInvokedRemoveURI;
 static NSMutableDictionary *terminalCounts;
 static NSDictionary *snapshot;
@@ -91,7 +94,7 @@ dispatch_block_t SAPCallReadOnlyServiceCancellable(NSString *service,NSString *m
     if(holdCatalogReads && [method isEqual:@"GetContextsProgress"]){NSArray *requested=asked(payload,1);if(requested.count>1){[heldInitialReads addObject:[^{done(progressData(requested,YES,5,10,5120,10240),nil);} copy]];return ^{};}}
     __block BOOL cancelled=NO;dispatch_async(dispatch_get_main_queue(),^{if(cancelled)return;NSData *reply=nil;
         if([method isEqual:@"Contains"]){NSString *u=asked(payload,3).firstObject;NSMutableData *e=[SAPProtoBytes(1,[u dataUsingEncoding:NSUTF8StringEncoding]) mutableCopy];if([members[u]boolValue])[e appendData:SAPProtoInteger(2,1)];NSMutableData *r=[SAPProtoBytes(2,e) mutableCopy];[r appendData:SAPProtoInteger(98,200)];reply=r;}
-        else if([method isEqual:@"GetEntity"])reply=[SAPProtoString(SAPProtoFields(payload),1)dataUsingEncoding:NSUTF8StringEncoding];
+        else if([method isEqual:@"GetEntity"]){entityReads++;reply=[SAPProtoString(SAPProtoFields(payload),1)dataUsingEncoding:NSUTF8StringEncoding];}
         else if([method isEqual:@"GetContexts"]){NSArray *requested=asked(payload,3);[readURIs addObject:requested?:@[]];reply=stateData(requested);}
         else if([method isEqual:@"GetItems"]){recoveryItemReads++;NSArray *uris=asked(payload,1);assert(uris.count<=256);NSMutableData *items=[NSMutableData data];for(NSUInteger i=0;i<uris.count;i++){if(recoveryMissingItem && i==0)continue;NSMutableData *item=[SAPProtoBytes(1,[uris[i]dataUsingEncoding:NSUTF8StringEncoding])mutableCopy];[item appendData:SAPProtoInteger(2,3)];[items appendData:SAPProtoBytes(1,item)];}reply=items;}
         else if([method isEqual:@"GetContextsProgress"])reply=progressData(asked(payload,1),NO,0,0,0,0);
@@ -103,7 +106,7 @@ dispatch_block_t SAPSubscribeReadOnlyService(NSString *service,NSString *method,
     store[key]=[done copy];[streamLeaseEvents addObject:[@"start:" stringByAppendingString:key]];
     BOOL progress=[method isEqual:@"SubscribeContextsProgress"];NSArray *requested=asked(payload,progress?1:3);
     if(!contextRequests)contextRequests=[NSMutableDictionary dictionary];if(!progress)contextRequests[key]=@{@"uris":requested,@"state_only":@(SAPProtoData(SAPProtoFields(payload),1)!=nil)};
-    if(!progress && !SAPProtoData(SAPProtoFields(payload),1)){assert(requested.count>0 && requested.count<=2);if(!nativeDefaultContexts)nativeDefaultContexts=[NSMutableArray array];[nativeDefaultContexts addObject:requested];}
+    if(!progress && !SAPProtoData(SAPProtoFields(payload),1)){assert(requested.count>0 && requested.count<=fixtureNativeContextLimit);if(!nativeDefaultContexts)nativeDefaultContexts=[NSMutableArray array];[nativeDefaultContexts addObject:requested];}
     dispatch_block_t first=^{if(!store[key])return;[streamLeaseEvents addObject:[@"healthy:" stringByAppendingString:key]];done(progress?currentProgress(requested):stateData(requested),nil);};
     if(holdStreamResponses)[heldStreamResponses addObject:[first copy]];
     else if(autoStreamResponses)dispatch_async(dispatch_get_main_queue(),first);
@@ -118,7 +121,7 @@ void SAPCallOfflineCommandOnce(NSString *method,NSData *payload,void(^done)(NSDa
         assert(![submittedUnfinishedURIs containsObject:u]);
         [submittedUnfinishedURIs addObject:u];[addSubmissionOrder addObject:u];
         peakSubmittedUnfinished=MAX(peakSubmittedUnfinished,submittedUnfinishedURIs.count);
-        assert(submittedUnfinishedURIs.count<=2); // ACKs never release native capacity.
+        assert(submittedUnfinishedURIs.count<=fixtureSubmittedLimit); // ACKs never release native capacity.
         addReplies[u]=[done copy];
     }
     else if([method isEqual:@"RemoveDownload"])removeReplies[u]=[done copy];
@@ -134,7 +137,8 @@ void SAPSetPlaylistOfflineOnceWithDisposition(NSString *uri,BOOL enabled,void(^d
     SAPSetPlaylistOfflineOnce(uri,enabled,^(NSData *data,NSString *error){done(data,error,SAPCommandInvoked);});
 }
 static void pump(double seconds){NSDate *d=[NSDate dateWithTimeIntervalSinceNow:seconds];while(d.timeIntervalSinceNow>0)[NSRunLoop.currentRunLoop runUntilDate:[NSDate dateWithTimeIntervalSinceNow:.001]];}
-static void waitForSession(BOOL(^condition)(void)){NSDate *deadline=[NSDate dateWithTimeIntervalSinceNow:3];while(!condition() && deadline.timeIntervalSinceNow>0)pump(.002);assert(condition());}
+static void waitForSessionAt(BOOL(^condition)(void),int line){NSDate *deadline=[NSDate dateWithTimeIntervalSinceNow:3];while(!condition() && deadline.timeIntervalSinceNow>0)pump(.002);if(!condition())fprintf(stderr,"Session wait failed at line %d\n",line);assert(condition());}
+#define waitForSession(condition) waitForSessionAt(condition,__LINE__)
 static void emit(NSMutableDictionary *store,NSData *data){for(void(^cb)(NSData*,NSString*) in store.allValues)cb(data,nil);}
 static void failStream(void){void(^cb)(NSData*,NSString*)=[contexts.allValues.firstObject copy];assert(cb);cb(nil,@"No verified Spotify stream transport is available");}
 static void releaseStreamResponses(void){NSArray *pending=[heldStreamResponses copy];[heldStreamResponses removeAllObjects];for(dispatch_block_t reply in pending)reply();pump(.02);}
@@ -162,7 +166,10 @@ static void ready(NSArray *uris){for(NSString *u in uris){native[u]=@0;members[u
 static void assertSubmitted(NSArray *uris){assert([submittedUnfinishedURIs isEqual:[NSSet setWithArray:uris]]);}
 static void initFixture(void){native=[NSMutableDictionary dictionary];members=[NSMutableDictionary dictionary];contexts=[NSMutableDictionary dictionary];progressStreams=[NSMutableDictionary dictionary];sent=[NSMutableArray array];streamCancels=[NSMutableArray array];heldContains=[NSMutableArray array];heldInitialReads=[NSMutableArray array];readURIs=[NSMutableArray array];addReplies=[NSMutableDictionary dictionary];removeReplies=[NSMutableDictionary dictionary];snapshot=nil;reads=streamStarts=peakSubmittedUnfinished=0;holdContains=holdPrepare=holdCatalogReads=NO;initialReadStates=nil;addSubmissionOrder=[NSMutableArray array];heldPreparations=[NSMutableArray array];submittedUnfinishedURIs=[NSMutableSet set];terminalCounts=[NSMutableDictionary dictionary];heldStreamResponses=[NSMutableArray array];streamLeaseEvents=[NSMutableArray array];autoStreamResponses=holdStreamResponses=failContextReads=NO;holdNextContextRead=NO;heldVerificationRead=nil;repairJournal=[NSMutableArray array];progressSnapshots=[NSMutableDictionary dictionary];}
 
-int main(){@autoreleasepool{
+int main(){setbuf(stdout,NULL);@autoreleasepool{
+    // Albums now use the direct path in production; this suite first keeps
+    // proving the ordered window that playlists still use.
+    SAPArtistSessionSetDirectAlbumSubmissionForTesting(NO);
     initFixture();native[uri(1)]=@3;ready(@[uri(2),uri(3),uri(4),uri(5),uri(59)]);
     dispatch_block_t detach=SAPObserveArtistDownloadSession(@[release(1),release(2),release(3),release(4),release(5),release(59)],^(NSDictionary *s){snapshot=s;});pump(.03);
     assert([snapshot[@"album_states"][uri(1)][@"state"] isEqual:@"downloaded"]);
@@ -789,8 +796,124 @@ int main(){@autoreleasepool{
     emitState(@[uri(10915)]);assert(![recoverySnapshot[@"album_states"][uri(10915)][@"native_cancelled"]boolValue]);acceptAdd(uri(10915));native[uri(10915)]=@5;emitState(@[uri(10915)]);
     cancelNative(uri(10915));pump(.02);assert(![recoverySnapshot[@"album_states"][uri(10915)][@"owned"]boolValue] && [recoverySnapshot[@"album_states"][uri(10915)][@"native_cancelled"]boolValue]);
     puts("PASS: recovery's initial zero never becomes a false external Stop; a genuine later native cancellation releases the operation and retains Continue");
+    // Review regressions: failed Stop preflight is retryable without replay.
+    NSArray *reviewReleases=@[release(11000),release(11001),release(11002),release(11003),release(11004),release(11005),release(11006)];
+    __block NSDictionary *reviewSnapshot=nil;
+    SAPArtistSessionObservation *reviewObservation=SAPObserveArtistSession(reviewReleases,^(NSDictionary *v){reviewSnapshot=v;});
+    ready(@[uri(11000)]);assert(SAPAppendArtistDownloadSessionReleases(@[release(11000)],&error));waitForSession(^BOOL{return addReplies[uri(11000)]!=nil;});acceptAdd(uri(11000));native[uri(11000)]=@4;emitState(@[uri(11000)]);
+    failContextReads=YES;SAPStopArtistDownloadSessionRelease(uri(11000));pump(.03);failContextReads=NO;
+    assert(![reviewSnapshot[@"album_states"][uri(11000)][@"stopping"]boolValue]);
+    assert([reviewSnapshot[@"album_states"][uri(11000)][@"owned"]boolValue] && !removeReplies[uri(11000)]);
+    SAPStopArtistDownloadSessionRelease(uri(11000));waitForSession(^BOOL{return removeReplies[uri(11000)]!=nil;});finishRemove(uri(11000));pump(.02);
+    puts("PASS: failed Stop preflight clears Stopping and allows one explicit retry");
+    ready(@[uri(11005)]);assert(SAPAppendArtistDownloadSessionReleases(@[release(11005)],&error));waitForSession(^BOOL{return addReplies[uri(11005)]!=nil;});acceptAdd(uri(11005));native[uri(11005)]=@4;emitState(@[uri(11005)]);
+    neverInvokedRemoveURI=uri(11005);SAPStopArtistDownloadSessionRelease(uri(11005));pump(.03);
+    assert(![reviewSnapshot[@"album_states"][uri(11005)][@"stopping"]boolValue] && !removeReplies[uri(11005)]);neverInvokedRemoveURI=nil;
+    SAPStopArtistDownloadSessionRelease(uri(11005));waitForSession(^BOOL{return removeReplies[uri(11005)]!=nil;});finishRemove(uri(11005));pump(.02);
+    ready(@[uri(11006)]);assert(SAPAppendArtistDownloadSessionReleases(@[release(11006)],&error));waitForSession(^BOOL{return addReplies[uri(11006)]!=nil;});acceptAdd(uri(11006));native[uri(11006)]=@4;emitState(@[uri(11006)]);
+    SAPStopArtistDownloadSessionRelease(uri(11006));waitForSession(^BOOL{return removeReplies[uri(11006)]!=nil;});failRemove(uri(11006),SAPProtoInteger(1,7),nil);pump(.03);
+    assert(![reviewSnapshot[@"album_states"][uri(11006)][@"stopping"]boolValue]);
+    SAPStopArtistDownloadSessionRelease(uri(11006));waitForSession(^BOOL{return removeReplies[uri(11006)]!=nil;});finishRemove(uri(11006));pump(.02);
+    puts("PASS: definitely uninvoked/rejected ordinary Stop is retryable without automatic command replay");
+
+
+    ready(@[uri(11001)]);assert(SAPAppendArtistDownloadSessionReleases(@[release(11001)],&error));waitForSession(^BOOL{return addReplies[uri(11001)]!=nil;});acceptAdd(uri(11001));native[uri(11001)]=@4;emitState(@[uri(11001)]);
+    SAPStopArtistDownloadSessionRelease(uri(11001));waitForSession(^BOOL{return removeReplies[uri(11001)]!=nil;});native[uri(11001)]=@3;emitState(@[uri(11001)]);pump(.02);
+    assert([reviewSnapshot[@"album_states"][uri(11001)][@"owned"]boolValue]);
+    assert(![reviewSnapshot[@"album_states"][uri(11001)][@"state"]isEqual:@"downloaded"]);
+    failRemove(uri(11001),NSData.data,nil);pump(.02);
+    assert([reviewSnapshot[@"album_states"][uri(11001)][@"owned"]boolValue]);
+    finishRemove(uri(11001));pump(.02);assert(![reviewSnapshot[@"album_states"][uri(11001)][@"owned"]boolValue]);
+    puts("PASS: state3 before/after ordinary Remove ACK retains ownership until native zero");
+
+    verifiedFixtureTrackCounts[uri(11002)]=@6;
+    ready(@[uri(11002)]);assert(SAPAppendArtistDownloadSessionReleases(@[release(11002)],&error));waitForSession(^BOOL{return addReplies[uri(11002)]!=nil;});acceptAdd(uri(11002));native[uri(11002)]=@4;emitState(@[uri(11002)]);
+    NSUInteger state4Reads=reads;emitProgress(uri(11002),NO,6,6);pump(.01);assert(reads==state4Reads+1);
+    assert(![reviewSnapshot[@"album_states"][uri(11002)][@"state"]isEqual:@"downloaded"]);
+    waitForSession(^BOOL{return removeReplies[uri(11002)]!=nil;});finishRemove(uri(11002));waitForSession(^BOOL{return addReplies[uri(11002)]!=nil;});acceptAdd(uri(11002));complete(uri(11002));
+    assert(sentExactCount([@"RemoveDownload:"stringByAppendingString:uri(11002)])==1);
+    puts("PASS: full state4 reconciles once and uses verified one-attempt native recovery");
+
+    verifiedFixtureTrackCounts[uri(11003)]=@6;
+    ready(@[uri(11003),uri(11004)]);assert(SAPAppendArtistDownloadSessionReleases(@[release(11003),release(11004)],&error));waitForSession(^BOOL{return addReplies[uri(11003)]!=nil;});acceptAdd(uri(11003));native[uri(11003)]=@4;emitState(@[uri(11003)]);nearTail(uri(11003));waitForSession(^BOOL{return addReplies[uri(11004)]!=nil;});acceptAdd(uri(11004));
+    emitProgress(uri(11003),NO,5,6);pump(.06);assert(!removeReplies[uri(11003)]);
+    emitProgress(uri(11003),NO,6,6);pump(.06);assert(!removeReplies[uri(11003)]);
+    complete(uri(11004));waitForSession(^BOOL{return removeReplies[uri(11003)]!=nil;});finishRemove(uri(11003));waitForSession(^BOOL{return addReplies[uri(11003)]!=nil;});acceptAdd(uri(11003));complete(uri(11003));
+    puts("PASS: incomplete state4 never recovers and full waiter is reconsidered after peer completion");
+    NSString *forcedPlaylist=@"spotify:playlist:0000000000000000011007";
+    NSDictionary *forcedRelease=@{@"uri":forcedPlaylist,@"incremental_playlist":@YES,@"artist_uri":ownerA,@"owner_token":@"forced-stop-review"};native[forcedPlaylist]=@3;
+    SAPArtistSessionObservation *forcedObservation=SAPObserveArtistSession(@[forcedRelease],^(__unused NSDictionary *v){});pump(.03);
+    assert(SAPReserveArtistDownloadSessionReleases(@[forcedRelease],&error));NSUInteger forcedRemoves=sentCount(@"RemoveDownload:");
+    failContextReads=YES;SAPStopArtistDownloadSessionRelease(forcedPlaylist);pump(.03);failContextReads=NO;
+    SAPStopArtistDownloadSessionRelease(forcedPlaylist);pump(.03);
+    assert(sentCount(@"RemoveDownload:")==forcedRemoves);[forcedObservation invalidate];assert(!SAPCancelArtistDownloadOwner(ownerA,@"forced-stop-review"));
+    puts("PASS: failed queued playlist Stop leaves no hidden forced removal intent");
+    [reviewObservation invalidate];
     [recoveryObservation invalidate];SAPArtistSessionSetRecoverySettleForTesting(2);
     assertSubmitted(@[]);assert(peakSubmittedUnfinished==2);assert(addReplies.count==0 && removeReplies.count==0);
     for(NSString *u in addSubmissionOrder)assert(([terminalCounts[u]unsignedIntegerValue]==[addSubmissionOrder filteredArrayUsingPredicate:[NSPredicate predicateWithFormat:@"SELF == %@",u]].count));
-    printf("PASS: reliable-tail native overlap peak=%lu, conservative unknown-count FIFO, paused reservation cap and unproven-zero recovery, adopted pre-tail gate, independent progress and out-of-order completion, ACK-held capacity, ambiguous reconciliation, scoped stop ordering, stale reads/watches, inactivity pause/recovery, detached cleanup and cache protection\n",(unsigned long)peakSubmittedUnfinished);return 0;
+    printf("PASS: reliable-tail native overlap peak=%lu, conservative unknown-count FIFO, paused reservation cap and unproven-zero recovery, adopted pre-tail gate, independent progress and out-of-order completion, ACK-held capacity, ambiguous reconciliation, scoped stop ordering, stale reads/watches, inactivity pause/recovery, detached cleanup and cache protection\n",(unsigned long)peakSubmittedUnfinished);
+
+    // Direct album path (production default): every selected release is sent
+    // as soon as it is prepared, like tapping download in Spotify. Only
+    // preparation is bounded; Spotify schedules the transfers itself.
+    initFixture();SAPArtistSessionSetDirectAlbumSubmissionForTesting(YES);fixtureSubmittedLimit=256;fixtureNativeContextLimit=64;autoStreamResponses=YES;
+    NSMutableArray *directReleases=[NSMutableArray array],*directURIs=[NSMutableArray array];
+    for(int n=9000;n<9070;n++){NSMutableDictionary *item=[release(n)mutableCopy];item[@"type"]=@2;[directReleases addObject:item];[directURIs addObject:uri(n)];}
+    ready(directURIs);for(int n=9000;n<9010;n++)members[uri(n)]=@NO;
+    SAPArtistSessionObservation *directObservation=SAPObserveArtistSession(directReleases,^(NSDictionary *s){snapshot=s;});pump(.05);
+    NSUInteger streamsBefore=streamStarts;entityReads=0;
+    assert(SAPAppendArtistDownloadSessionReleases(directReleases,&error));
+    waitForSession(^BOOL{return submittedUnfinishedURIs.count==70;});pump(.3);
+    assert(addSubmissionOrder.count==70 && sentCount(@"save:")==10 && entityReads==0 && "all releases are sent before any native progress; singles need no extra metadata read");
+    printf("direct stream starts: %lu\n",(unsigned long)(streamStarts-streamsBefore));assert(streamStarts-streamsBefore<=30 && "a burst of submissions renews the live streams a bounded number of times");
+    NSMutableSet *observedDefault=[NSMutableSet set];for(NSArray *request in nativeDefaultContexts)[observedDefault addObjectsFromArray:request];
+    for(NSString *u in directURIs)assert([observedDefault containsObject:u]);
+    for(NSDictionary *request in contextRequests.allValues)if([request[@"state_only"]boolValue])for(NSString *u in directURIs)assert(![request[@"uris"]containsObject:u]);
+    for(NSString *u in directURIs)acceptAdd(u);pump(.02);
+    // Spotify finishes in its own order; nothing waits for an older release.
+    for(NSString *u in directURIs.reverseObjectEnumerator)complete(u);
+    waitForSession(^BOOL{return [snapshot[@"active"]boolValue]==NO;});
+    assert(addSubmissionOrder.count==70 && submittedUnfinishedURIs.count==0 && addReplies.count==0);
+    for(NSString *u in directURIs)assert([snapshot[@"album_states"][u][@"state"]isEqual:@"downloaded"]);
+    puts("PASS: direct album path sends all 70 selected releases at once, saves missing library items first, observes them in 64-URI chunks and finishes out of order");
+
+    // Preparation stays bounded to four releases; each sent one frees a place.
+    NSMutableArray *windowReleases=[NSMutableArray array],*windowURIs=[NSMutableArray array];
+    for(int n=9100;n<9110;n++){[windowReleases addObject:release(n)];[windowURIs addObject:uri(n)];}
+    ready(windowURIs);[directObservation extendReleases:windowReleases];pump(.03);holdContains=YES;
+    NSUInteger windowStart=addSubmissionOrder.count;
+    assert(SAPAppendArtistDownloadSessionReleases(windowReleases,&error));pump(.05);
+    assert(heldContains.count==4 && addSubmissionOrder.count==windowStart && "only four releases prepare at once");
+    while(addSubmissionOrder.count<windowStart+10){
+        assert(heldContains.count>0 && heldContains.count<=4);dispatch_block_t reply=heldContains.firstObject;[heldContains removeObjectAtIndex:0];reply();pump(.02);
+    }
+    holdContains=NO;assert(heldContains.count==0);
+    for(NSString *u in windowURIs)acceptAdd(u);pump(.02);
+    // Stop applies to every sent release, after its Add was acknowledged.
+    SAPStopArtistDownloadSessionReleases(windowReleases);waitForSession(^BOOL{return removeReplies.count==10;});
+    for(NSString *u in windowURIs)finishRemove(u);
+    waitForSession(^BOOL{return submittedUnfinishedURIs.count==0 && [snapshot[@"active"]boolValue]==NO;});
+    for(NSString *u in windowURIs)assert(sentExactCount([@"AddDownload:" stringByAppendingString:u])==1 && sentExactCount([@"RemoveDownload:" stringByAppendingString:u])==1);
+    puts("PASS: direct preparation is bounded to four releases, each submission refills the window, and Stop removes every sent release exactly once");
+
+    // A stream opened before AddDownload can still deliver the previous attempt's
+    // error snapshot. It must not fail the new attempt while renewal is batched.
+    NSString *stale=uri(9300);ready(@[stale]);native[stale]=@1;[directObservation extendReleases:@[release(9300)]];pump(.3);
+    holdContains=YES;NSUInteger directStaleAdds=addSubmissionOrder.count;assert(SAPAppendArtistDownloadSessionReleases(@[release(9300)],&error));
+    waitForSession(^BOOL{return heldContains.count==1;});pump(.3); // older streams now own the preparing release
+    dispatch_block_t staleReply=heldContains.firstObject;[heldContains removeAllObjects];holdContains=NO;staleReply();
+    assert(addSubmissionOrder.count==directStaleAdds+1);emitState(@[stale]);pump(.01);
+    assert(![phase(stale) isEqual:@"failed"] && "a pre-Add error snapshot cannot end the new attempt");
+    native[stale]=@4;pump(.3);acceptAdd(stale);pump(.02);assert(![phase(stale) isEqual:@"failed"]);
+    complete(stale);waitForSession(^BOOL{return [snapshot[@"album_states"][stale][@"state"]isEqual:@"downloaded"];});
+    puts("PASS: batched stream renewal ignores a stale pre-Add error for the new attempt and still reports its completion");
+    // A release Spotify already has in progress is adopted without a second Add.
+    NSString *adopted=uri(9200);ready(@[adopted]);native[adopted]=@4;[directObservation extendReleases:@[release(9200)]];pump(.03);
+    NSUInteger adoptedAdds=addSubmissionOrder.count;assert(SAPAppendArtistDownloadSessionReleases(@[release(9200)],&error));pump(.05);
+    assert(addSubmissionOrder.count==adoptedAdds && "an active native context is never sent again");
+    native[adopted]=@3;emitState(@[adopted]);waitForSession(^BOOL{return [snapshot[@"active"]boolValue]==NO;});
+    [directObservation invalidate];pump(.02);
+    puts("PASS: direct path adopts an already active native download without another AddDownload");
+    return 0;
 }}

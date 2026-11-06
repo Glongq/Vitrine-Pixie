@@ -22,16 +22,24 @@
     if(![self isCurrent])return;SAPArtistDownloadSession *s=self.session;NSString *uri=self.uri;NSMutableDictionary *raw=[s stateFor:uri];
     [s.stopOperations removeObject:uri];[s.stopTokens removeObjectForKey:uri];[s.stopSentURIs removeObject:uri];
     dispatch_block_t cancel=s.stopReadCancels[uri];if(cancel)cancel();[s.stopReadCancels removeObjectForKey:uri];
-    [raw removeObjectForKey:@"stop_confirmed"];[raw removeObjectForKey:@"recovery_removal_pending"];
+    [raw removeObjectForKey:@"stop_confirmed"];[raw removeObjectForKey:@"recovery_removal_pending"];[raw removeObjectForKey:@"stop_removal_pending"];
     raw[@"local_active"]=@NO;raw[@"stopping"]=@NO;raw[@"download_requested"]=@NO;raw[@"local_phase"]=error.length?@"failed":@"idle";
     if(error.length)raw[@"error"]=error;else[raw removeObjectForKey:@"error"];
-    SAP_JOURNAL_ACTION(@"artist_album_queue_advanced",@{@"album_uri":uri,@"native_state":raw[@"native_state"]?:@0,@"error":error?:@"",@"operation_token":self.token,@"owned_operations":@(s.operations.count-1),@"max_window":@2,@"queued_remaining":@(s.queue.count)});
+    SAP_JOURNAL_ACTION(@"artist_album_queue_advanced",@{@"album_uri":uri,@"native_state":raw[@"native_state"]?:@0,@"error":error?:@"",@"operation_token":self.token,@"owned_operations":@(s.operations.count-1),@"max_window":@(SAPArtistDirectURI(uri)?SAPArtistSubmittedLimit:2),@"queued_remaining":@(s.queue.count)});
     if(self.discardStoppedIntent || !self.stopped || [raw[@"native_state"]isEqual:@3]){[s clearOwners:uri];[s.stoppedItems removeObjectForKey:uri];[s.stoppedOrder removeObject:uri];}
-    [s.abandonedURIs removeObject:uri];[s.forcedOfflineStops removeObject:uri];[self cancel];[s.operations removeObjectForKey:uri];[s publish];if(!s.stopBatchDepth){[s next];[s pumpAdmissions];}
+    [s.abandonedURIs removeObject:uri];[s.forcedOfflineStops removeObject:uri];[self cancel];[s.operations removeObjectForKey:uri];[s publish];
+    for(SAPArtistAlbumOperation *peer in s.operations.allValues)[peer considerRecovery];
+    if(!s.stopBatchDepth){[s next];[s pumpAdmissions];}
 }
 - (void)armWorkDeadline {
+    // Every progress event re-arms all releases waiting in Spotify's queue.
+    // Re-creating hundreds of timers per event buys no precision on a
+    // 15-minute limit, so a fresh timer is kept for a short slack.
+    double now=clockNow(),slack=MIN(5.0,SAPArtistWorkTimeoutSeconds/100);
+    if(self.workDeadline && self.workDeadlineOperationEpoch==self.epoch && [self isCurrent] && now-self.workDeadlineArmedAt<slack)return;
     if(self.workDeadline){dispatch_source_cancel(self.workDeadline);self.workDeadline=nil;}
     if(![self isCurrent])return;
+    self.workDeadlineArmedAt=now;self.workDeadlineOperationEpoch=self.epoch;
     NSUInteger epoch=self.epoch,generation=++self.workEpoch;__weak typeof(self) weak=self;
     self.workDeadline=SAPScheduleDeadline(dispatch_get_main_queue(),SAPArtistWorkTimeoutSeconds,^{
         typeof(self) s=weak;if(!s || ![s isCurrent] || s.epoch!=epoch || s.workEpoch!=generation)return;s.workDeadline=nil;
@@ -46,7 +54,7 @@
     NSString *uri=self.uri;NSDictionary *raw=self.session.states[uri];NSUInteger code=[raw[@"native_state"]unsignedIntegerValue];
     // An incremental playlist may receive an already-sent append after it was full.
     // Cancel must confirm native offlining is disabled before releasing ownership.
-    if(self.stopped && [self.session.forcedOfflineStops containsObject:uri]){if(code==0 && [raw[@"stop_confirmed"]boolValue])[self finish:nil];return;}
+    if(self.stopped && ([raw[@"stop_removal_pending"]boolValue] || [self.session.forcedOfflineStops containsObject:uri])){if(code==0 && [raw[@"stop_confirmed"]boolValue])[self finish:nil];return;}
     // A completion seen while Remove is pending cannot prove that the
     // destructive command will not take effect later. Keep the FIFO lease.
     if([raw[@"recovery_removal_pending"]boolValue] && !self.stopped)return;
@@ -58,10 +66,10 @@
         if(!self.stopped){self.stopped=YES;[self.session rememberStopped:self.item];}
         [self finish:nil];return;
     }
+    // Both native waiter states can outlive complete audio counters. A fresh
+    // context read is bounded to this attempt and never synthesizes success.
+    if((code==4 || code==5) && self.hasTrustedCounts && [raw[@"total"]unsignedLongLongValue]>0 && [raw[@"downloaded"]isEqual:raw[@"total"]] && !self.completionReadAttempted){self.completionReadAttempted=YES;[self reconcile];}
     [self considerRecovery];
-    if(self.recoveryStage.length)return;
-    // Full track totals are evidence to reconcile once, never album completion.
-    if(code==5 && self.hasTrustedCounts && [raw[@"total"]unsignedLongLongValue]>0 && [raw[@"downloaded"]isEqual:raw[@"total"]] && !self.completionReadAttempted){self.completionReadAttempted=YES;[self reconcile];}
 }
 // A single native re-registration repairs an observed aggregate waiter. Remove
 // has no preserve-cache flag: unreferenced files may need to download again.
@@ -77,7 +85,7 @@
 - (BOOL)recoveryEligible {
     NSDictionary *raw=self.session.states[self.uri];uint64_t total=[raw[@"total"]unsignedLongLongValue],bytes=[raw[@"total_bytes"]unsignedLongLongValue];
     return self.ownAddAcknowledged && SAPIsAlbumURI(self.uri) && self.downloadSent && !self.commandPending && [self recoveryExclusive] &&
-        [raw[@"native_state"]isEqual:@5] && self.hasTrustedCounts && total>0 && [raw[@"downloaded"]unsignedLongLongValue]==total &&
+        ([raw[@"native_state"]isEqual:@4] || [raw[@"native_state"]isEqual:@5]) && self.hasTrustedCounts && total>0 && [raw[@"downloaded"]unsignedLongLongValue]==total &&
         bytes>0 && [raw[@"downloaded_bytes"]unsignedLongLongValue]==bytes && ![raw[@"queued_tracks"]unsignedLongLongValue] &&
         ![raw[@"queued_bytes"]unsignedLongLongValue] && ![raw[@"native_downloading"]boolValue];
 }
@@ -109,7 +117,7 @@
             NSNumber *fresh=error.length?nil:exactContextState(data,op.uri);
             if(!fresh){[op haltRecovery:@"Spotify could not verify album finalization. No recovery command was sent; refresh or Stop this task."];return;}
             [op.session apply:data progress:NO];if(![op isCurrent])return;
-            if(![fresh isEqual:@5] || ![op recoveryEligible]){[op haltRecovery:@"Album status changed during finalization verification. No recovery command was sent; refresh or Stop this task."];return;}
+            if((![fresh isEqual:@4] && ![fresh isEqual:@5]) || ![op recoveryEligible]){[op haltRecovery:@"Album status changed during finalization verification. No recovery command was sent; refresh or Stop this task."];return;}
             [op readService:@"spotify.metadata_esperanto.proto.ClassicMetadataService" method:@"GetEntity" payload:SAPProtoBytes(1,[op.uri dataUsingEncoding:NSUTF8StringEncoding]) completion:^(NSData *metadata,NSString *failure){
                 if(op.stopped || op.paused || ![op.recoveryStage isEqual:@"verifying"])return;
                 NSString *reason=nil;NSArray *tracks=failure?nil:SAPParseArtistAlbumTrackURIs(metadata,op.uri,&reason);
@@ -124,7 +132,7 @@
 - (void)verifyRecoveryItems:(NSArray *)tracks offset:(NSUInteger)offset {
     if(![self recoveryEligible] || tracks.count!=[self.session.states[self.uri][@"total"]unsignedLongLongValue]){[self haltRecovery:@"Album ownership or progress changed. No recovery command was sent; refresh or Stop this task."];return;}
     if(offset==tracks.count){
-        SAP_JOURNAL_ACTION(@"artist_native_reregistration_verified",@{@"album_uri":self.uri,@"expected_tracks":@(tracks.count),@"downloaded_items":@(tracks.count),@"native_state":@5,@"cache_redownload_possible":@YES});[self removeForRecovery];return;
+        SAP_JOURNAL_ACTION(@"artist_native_reregistration_verified",@{@"album_uri":self.uri,@"expected_tracks":@(tracks.count),@"downloaded_items":@(tracks.count),@"native_state":self.session.states[self.uri][@"native_state"]?:@0,@"cache_redownload_possible":@YES});[self removeForRecovery];return;
     }
     NSArray *chunk=[tracks subarrayWithRange:NSMakeRange(offset,MIN((NSUInteger)256,tracks.count-offset))];
     [self readService:offlineService method:@"GetItems" payload:urisRequest(chunk,1) completion:^(NSData *data,NSString *error){
@@ -192,7 +200,7 @@
         if(fields && !error.length && !SAPProtoNumber(fields,2,0))for(NSDictionary *entry in fields)if([entry[@"number"]unsignedIntValue]==1 && [entry[@"wire"]unsignedIntValue]==2){NSArray *info=SAPProtoFields(SAPProtoData(SAPProtoFields(entry[@"value"]),1));if([SAPProtoString(info,1)isEqual:uri] && SAPProtoNumber(info,2,0)<=5)code=@(SAPProtoNumber(info,2,0));}
         if(!code){if(self.session.repairing){self.needsReadRepair=YES;return;}[self finish:error?:@"Spotify did not return a valid album state. The download was not sent."];return;}
         if(code.unsignedIntegerValue==3 && !(SAPIsPlaylistURI(uri) && [self.item[@"refresh_after_append"]boolValue])){if(self.playlistFeedOpen)self.downloadSent=YES;[self.session apply:data progress:NO];return;}
-        if(code.unsignedIntegerValue==2 || code.unsignedIntegerValue==4 || code.unsignedIntegerValue==5){self.downloadSent=YES;self.sawNativeActive=YES;self.session.lastSubmittedOperation=self;[self.session stateFor:uri][@"local_phase"]=@"waiting";[self.session apply:data progress:NO];[self.session publish];return;}
+        if(code.unsignedIntegerValue==2 || code.unsignedIntegerValue==4 || code.unsignedIntegerValue==5){self.downloadSent=YES;self.sawNativeActive=YES;self.session.lastSubmittedOperation=self;[self.session stateFor:uri][@"local_phase"]=@"waiting";[self.session apply:data progress:NO];[self.session publish];if(SAPArtistDirectURI(uri))[self.session scheduleNext];return;}
         if(code.unsignedIntegerValue==3)[[self.session stateFor:uri]removeObjectForKey:@"native_state"];else[self.session stateFor:uri][@"native_state"]=code;
         if(SAPIsPlaylistURI(uri))[self requestDownload];else[self readMembership:0 until:0];
     }];
@@ -257,7 +265,7 @@
 }
 - (void)requestDownload {
     if(![self isCurrent] || self.downloadSent || self.paused)return;
-    if(!self.countReadAttempted && SAPIsAlbumURI(self.uri) && [self.item[@"type"]unsignedIntValue]==2 && ![self.item[@"track_count_verified"]boolValue]) {
+    if(!self.countReadAttempted && SAPIsAlbumURI(self.uri) && !SAPArtistDirectURI(self.uri) && [self.item[@"type"]unsignedIntValue]==2 && ![self.item[@"track_count_verified"]boolValue]) {
         self.countReadAttempted=YES;NSUInteger epoch=self.epoch;NSString *uri=self.uri;
         [self readService:@"spotify.metadata_esperanto.proto.ClassicMetadataService" method:@"GetEntity" payload:SAPProtoBytes(1,[uri dataUsingEncoding:NSUTF8StringEncoding]) completion:^(NSData *data,NSString *error){
             if(![self isCurrent] || epoch!=self.epoch)return;NSString *reason=nil;NSArray *tracks=error?nil:SAPParseArtistAlbumTrackURIs(data,uri,&reason);
@@ -272,7 +280,7 @@
 - (void)submitDownload {
     if(![self isCurrent] || self.downloadSent || self.paused)return;
     self.readyForDownload=NO;self.hasTrustedCounts=NO;self.session.lastSubmittedOperation=self;
-    NSUInteger epoch=self.epoch;NSString *uri=self.uri;self.downloadSent=YES;self.commandPending=YES;
+    NSUInteger epoch=self.epoch;NSString *uri=self.uri;self.downloadSent=YES;self.commandPending=YES;self.submittedWatchEpoch=self.session.watchEpoch;
     NSMutableDictionary *raw=[self.session stateFor:uri];
     // A preflight error belongs to the previous attempt. Only fresh native
     // context events can terminate this newly submitted download as failed.
@@ -281,7 +289,7 @@
     NSUInteger submitted=0;for(SAPArtistAlbumOperation *owned in self.session.operations.allValues)if(owned.downloadSent)submitted++;
     NSMutableDictionary *selectedRelease=[NSMutableDictionary dictionaryWithObject:uri forKey:@"uri"];
     for(NSString *key in @[@"name",@"category",@"type",@"year"]){id value=self.item[key];if([value isKindOfClass:NSString.class])selectedRelease[key]=[value length]<=512?value:[value substringToIndex:512];else if([value isKindOfClass:NSNumber.class])selectedRelease[key]=value;}
-    SAP_JOURNAL_ACTION(@"artist_album_download_requested",@{@"album_uri":uri,@"selected_release":selectedRelease,@"automatic_replay":@NO,@"operation_token":self.token,@"owned_operations":@(self.session.operations.count),@"max_window":@2,@"queued_remaining":@(self.session.queue.count),@"submitted_operations":@(submitted),@"release_gate":self.releaseGate?:@{}});
+    SAP_JOURNAL_ACTION(@"artist_album_download_requested",@{@"album_uri":uri,@"selected_release":selectedRelease,@"automatic_replay":@NO,@"operation_token":self.token,@"owned_operations":@(self.session.operations.count),@"max_window":@(SAPArtistDirectURI(uri)?SAPArtistSubmittedLimit:2),@"queued_remaining":@(self.session.queue.count),@"submitted_operations":@(submitted),@"release_gate":self.releaseGate?:@{}});
     contextCommandWithDisposition(uri,YES,^(NSData *data,NSString *error,SAPCommandInvocationDisposition disposition){
         if(![self isCurrent] || epoch!=self.epoch || !self.commandPending)return;self.commandPending=NO;
         if(disposition==SAPCommandNotInvoked){
@@ -304,6 +312,9 @@
     });
     // Start observations after the mutation was queued on the transport worker.
     // Old subscription callbacks cannot complete this new album attempt.
-    if(epoch==self.epoch && [self isCurrent]){self.session.watchNeedsRenewal=YES;[self.session startWatch];}
+    if(epoch==self.epoch && [self isCurrent]) {
+        if(SAPArtistDirectURI(uri)){[self.session scheduleWatchRenewal];[self.session scheduleNext];}
+        else{self.session.watchNeedsRenewal=YES;[self.session startWatch];}
+    }
 }
 @end

@@ -8,26 +8,25 @@
 #include <stdatomic.h>
 
 
-static BOOL explicitAlbumURI(NSString *uri) {
-    NSString *prefix=@"spotify:album:";
+static BOOL explicitEntityURI(NSString *uri,NSString *kind) {
+    NSString *prefix=[NSString stringWithFormat:@"spotify:%@:",kind];
     if(![uri isKindOfClass:NSString.class] || ![uri hasPrefix:prefix] || uri.length!=prefix.length+22)return NO;
     NSCharacterSet *invalid=[NSCharacterSet characterSetWithCharactersInString:@"0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"].invertedSet;
     return [[uri substringFromIndex:prefix.length]rangeOfCharacterFromSet:invalid].location==NSNotFound;
 }
+static BOOL explicitAlbumURI(NSString *uri) {return explicitEntityURI(uri,@"album");}
 static void callExplicitServiceOnce(NSString *serviceName,NSString *method,NSData *payload,void (^completion)(NSData *,NSString *)) {
     SAPInvokeServiceOnce(serviceName,method,payload,^(NSData *data,NSString *error,SAPCommandInvocationDisposition disposition){if(completion)completion(data,error);});
 }
 void SAPCallOfflineCommandOnceWithDisposition(NSString *method,NSData *payload,
     void (^completion)(NSData *,NSString *,SAPCommandInvocationDisposition)) {
-    BOOL albumCommand=NO;
+    BOOL downloadCommand=NO;
     if(([method isEqual:@"AddDownload"] || [method isEqual:@"RemoveDownload"]) && [payload isKindOfClass:NSData.class]) {
         NSArray *fields=SAPProtoFields(payload);NSString *uri=SAPProtoString(fields,2);
-        NSString *playlistID=[uri hasPrefix:@"spotify:playlist:"]?[uri substringFromIndex:17]:nil;
-        NSCharacterSet *invalid=[NSCharacterSet characterSetWithCharactersInString:@"0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"].invertedSet;
-        BOOL playlist=playlistID.length==22 && [playlistID rangeOfCharacterFromSet:invalid].location==NSNotFound;
-        albumCommand=fields.count==1 && (explicitAlbumURI(uri) || playlist);
+        downloadCommand=fields.count==1 && (explicitAlbumURI(uri) ||
+            explicitEntityURI(uri,@"playlist") || explicitEntityURI(uri,@"track"));
     }
-    if((![method isEqual:@"SetOfflinePlaybackAllowed"] && !albumCommand) || ![payload isKindOfClass:NSData.class]) {
+    if((![method isEqual:@"SetOfflinePlaybackAllowed"] && !downloadCommand) || ![payload isKindOfClass:NSData.class]) {
         if(completion)dispatch_async(dispatch_get_main_queue(),^{completion(nil,@"Unsupported explicit offline command",SAPCommandNotInvoked);});return;
     }
     SAPInvokeServiceOnce(SAPOfflineService,method,payload,completion);

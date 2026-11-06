@@ -9,6 +9,7 @@ NSString *SAPArtistArtworkIdentifier(NSString *value);
 + (instancetype)shared;
 - (dispatch_block_t)loadURL:(NSString *)value completion:(void (^)(UIImage *))completion;
 - (dispatch_block_t)loadPlaylistURI:(NSString *)uri completion:(void (^)(UIImage *))completion;
+- (dispatch_block_t)loadImageURI:(NSString *)uri maximumPixels:(NSUInteger)pixels completion:(void (^)(UIImage *))completion;
 - (UIImage *)thumbnailForData:(NSData *)data;
 @end
 

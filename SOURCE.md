@@ -1,6 +1,6 @@
 # Source provenance
 
-Current source snapshot: **Pixie Manager v1.3**. The existing jailbreak release/tag retains its earlier source snapshot and DEB files.
+Current source snapshot: **Pixie Manager v1.4**. The existing jailbreak release/tag retains its earlier source snapshot and DEB files.
 
 - Base: [Vitrine 1.0.0-beta.16](https://github.com/My-Name-Is-Jeff/vitrine), pinned to commit `36d3b38ec39c0b8b696f1d2db026ca9e9939bf14`.
 - `patches/vitrine-pixie.patch`: the local changes against that exact revision. Vitrine's existing code remains under its original GPL-3.0 licence and authorship.

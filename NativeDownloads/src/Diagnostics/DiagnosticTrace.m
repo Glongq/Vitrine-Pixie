@@ -19,6 +19,12 @@ static dispatch_block_t resetObserver;
 static atomic_uint_fast64_t generation,identifiers,captured,written,dropped,writeFailures,rotations,evictedBytes,invalidRecords,oversized,redactedOrTruncated;
 static atomic_uint pending,rpcPending;
 static atomic_uint_fast64_t rpcCapacityDrops,hookCapacityDrops,lifetimeCapacityDrops;
+// Traffic telemetry and byte-identical progress repeats carry no download evidence and filled ~65% of a
+// real session, rotating the start of the log away. They are counted, never written.
+static atomic_uint_fast64_t suppressedTraffic,suppressedRepeats;
+static os_unfair_lock repeatLock=OS_UNFAIR_LOCK_INIT;
+static NSMutableDictionary<NSString *,NSData *> *repeatPayloads;
+static uint64_t repeatGeneration;
 static atomic_int lastWriteErrno;
 static dispatch_queue_t writer;
 static void *writerKey=&writerKey;
@@ -126,9 +132,8 @@ static void append(NSDictionary *event) {
     fileBytes+=data.length+1;
     if(fflush(stream)){ioFailure();return;}atomic_fetch_add(&written,1);
 }
-void SAPTraceEvent(const char *category,const char *stage,SAPTraceID operation,NSDictionary *facts) {
-    uint64_t epoch=atomic_load(&generation);
-    if(!SAPTraceIsActive())return;
+void SAPTraceEventAtGeneration(const char *category,const char *stage,SAPTraceID operation,NSDictionary *facts,uint64_t epoch) {
+    if(!SAPTraceIsActive()||epoch!=atomic_load(&generation))return;
     uint64_t ticks=mach_continuous_time();double utc=wallClock();
     if(atomic_fetch_add(&pending,1)>=pendingLimit){atomic_fetch_sub(&pending,1);atomic_fetch_add(&dropped,1);return;}
     uint64_t eventID=atomic_fetch_add(&identifiers,1)+1;
@@ -139,6 +144,9 @@ void SAPTraceEvent(const char *category,const char *stage,SAPTraceID operation,N
         @"evidence":@"observed_at_instrumented_boundary",@"facts":sanitize(facts?:@{},0),@"enqueue_ticks":@(mach_continuous_time())};
     if(epoch!=atomic_load(&generation)||!SAPTraceIsActive()){atomic_fetch_sub(&pending,1);atomic_fetch_add(&discardedAfterClose,1);return;}
     atomic_fetch_add(&captured,1);dispatch_async(writer,^{append(value);atomic_fetch_sub(&pending,1);});
+}
+void SAPTraceEvent(const char *category,const char *stage,SAPTraceID operation,NSDictionary *facts) {
+    SAPTraceEventAtGeneration(category,stage,operation,facts,atomic_load(&generation));
 }
 SAPTraceID SAPTraceBegin(NSString *kind,NSString *source,NSDictionary *facts) {
     if(!SAPTraceIsActive())return 0;
@@ -171,7 +179,7 @@ BOOL SAPTraceReset(NSError **error) {
         if(!failure){
             atomic_store(&captured,0);atomic_store(&written,0);atomic_store(&dropped,0);atomic_store(&writeFailures,0);
             atomic_store(&rotations,0);atomic_store(&evictedBytes,0);atomic_store(&invalidRecords,0);atomic_store(&oversized,0);
-            atomic_store(&redactedOrTruncated,0);atomic_store(&lastWriteErrno,0);atomic_store(&discardedAfterClose,0);atomic_store(&rpcCapacityDrops,0);
+            atomic_store(&redactedOrTruncated,0);atomic_store(&suppressedTraffic,0);atomic_store(&suppressedRepeats,0);atomic_store(&lastWriteErrno,0);atomic_store(&discardedAfterClose,0);atomic_store(&rpcCapacityDrops,0);
             atomic_store(&resetEpochMilliseconds,(uint64_t)(wallClock()*1000));
         }
     };
@@ -266,6 +274,7 @@ NSDictionary *SAPTraceReport(void) {
         @"invalid_records":@(atomic_load(&invalidRecords)),@"oversized_records":@(atomic_load(&oversized)),@"rotations":@(atomic_load(&rotations)),
         @"redacted_or_truncated_values":@(atomic_load(&redactedOrTruncated)),
         @"inflight_events_discarded_after_diagnostics_closed":@(atomic_load(&discardedAfterClose)),
+        @"suppressed_traffic_adapter_calls":@(atomic_load(&suppressedTraffic)),@"suppressed_identical_progress_callbacks":@(atomic_load(&suppressedRepeats)),
         @"evicted_bytes":@(atomic_load(&evictedBytes)),@"rpc_slots_in_use":@(atomic_load(&rpcPending)),
         @"rpc_observations_dropped_at_capacity":@(atomic_load(&rpcCapacityDrops)),@"hook_registrations_dropped_at_capacity":@(atomic_load(&hookCapacityDrops)),@"lifetime_classes_unobserved_at_capacity":@(atomic_load(&lifetimeCapacityDrops)),
         @"scope":@"Pixie and calls crossing instrumented Spotify transports; not every internal Spotify call",
@@ -412,8 +421,25 @@ static void bindLifetime(SAPTraceRPC *call,id lifetime) {
     }
     os_unfair_lock_unlock(&lifetimeLock);
 }
+static BOOL noisyService(NSString *service) {
+    return [service isKindOfClass:NSString.class]&&[service isEqual:@"spotify.connectivity.traffic.esperanto.proto.TrafficAdapter"];
+}
+BOOL SAPTraceRepeatedProgressPayload(NSString *scope,NSString *method,SAPTraceID operation,id payload) {
+    if(!SAPTraceIsActive()||![payload isKindOfClass:NSData.class]||![method isKindOfClass:NSString.class])return NO;
+    if(![method isEqual:@"SubscribeContextsProgress"]&&![method isEqual:@"SubscribeTotalProgress"]&&![method isEqual:@"SubscribeBulkRedownloadProgress"])return NO;
+    NSString *key=[NSString stringWithFormat:@"%@:%@:%llu",scope,method,(unsigned long long)operation];BOOL same=NO;
+    os_unfair_lock_lock(&repeatLock);
+    uint64_t current=SAPTraceGeneration();
+    if(!repeatPayloads||repeatGeneration!=current){repeatPayloads=[NSMutableDictionary dictionary];repeatGeneration=current;}
+    NSData *previous=repeatPayloads[key];same=previous&&[previous isEqualToData:payload];
+    if(!same){if(repeatPayloads.count>=128)[repeatPayloads removeAllObjects];repeatPayloads[key]=[payload copy];}
+    os_unfair_lock_unlock(&repeatLock);
+    if(same)atomic_fetch_add(&suppressedRepeats,1);
+    return same;
+}
 SAPTraceRPC *SAPTraceRPCBegin(NSString *service,NSString *method,NSData *payload,NSString *source,id endpoint,BOOL isStream) {
     if(!SAPTraceIsActive())return nil;
+    if(noisyService(service)){atomic_fetch_add(&suppressedTraffic,1);return nil;}
     if(atomic_fetch_add(&rpcPending,1)>=maximumRPC){atomic_fetch_sub(&rpcPending,1);atomic_fetch_add(&rpcCapacityDrops,1);return nil;}
     SAPTraceRPC *call=[SAPTraceRPC new];call.identifier=atomic_fetch_add(&identifiers,1)+1;call.parent=currentOperation;
     call.generation=atomic_load(&generation);call.started=mach_continuous_time();call.stream=isStream;call.service=[service isKindOfClass:NSString.class]?service:@"unknown";call.method=[method isKindOfClass:NSString.class]?method:@"unknown";
@@ -438,6 +464,7 @@ void SAPTraceRPCReply(SAPTraceRPC *call,id response) {
     if(!call||!SAPTraceIsActive()||call.generation!=SAPTraceGeneration())return;
     @synchronized(call){
     unsigned message=atomic_fetch_add(&call->_messages,1)+1;
+    if(!(call.stream&&!atomic_load(&call->_timedOut)&&SAPTraceRepeatedProgressPayload(@"rpc",call.method,call.identifier,response)))
     rpcEvent(call,atomic_load(&call->_timedOut)?"late_callback":(!call.stream&&message>1?"duplicate_callback":atomic_load(&call->_finished)?"callback_after_observation_end":"callback"),
         @{@"message":@(message),@"response":SAPTraceWireSummary(call.service,call.method,response,YES),@"body_is_data":@([response isKindOfClass:NSData.class]),@"server_origin_proven":@NO});
     extern void SAPNativeKeyTraceObserveMetadata(NSString *,NSString *,NSString *,NSData *) __attribute__((weak_import));

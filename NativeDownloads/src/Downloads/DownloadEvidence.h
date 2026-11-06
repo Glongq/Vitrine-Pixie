@@ -16,7 +16,7 @@ static inline SAPDownloadContextEvidence SAPReadDownloadContextEvidence(NSDictio
         [raw[@"total"] unsignedIntegerValue] > 0 &&
         [raw[@"downloaded"] unsignedIntegerValue] <= [raw[@"total"] unsignedIntegerValue];
     return (SAPDownloadContextEvidence){
-        .downloaded = [raw[@"native_state"] isEqual:@3] && ![raw[@"recovery_removal_pending"] boolValue],
+        .downloaded = [raw[@"native_state"] isEqual:@3] && ![raw[@"recovery_removal_pending"] boolValue] && ![raw[@"stop_removal_pending"] boolValue],
         .nativeActive = state == 2 || state == 4 || state == 5,
         .trustedTotals = trusted,
         .progress = trusted ? [raw[@"downloaded"] doubleValue] / [raw[@"total"] doubleValue]

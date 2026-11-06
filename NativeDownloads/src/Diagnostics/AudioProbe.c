@@ -26,7 +26,7 @@ typedef struct {
     atomic_bool retired;
     atomic_bool receivedPCM;
     _Atomic(const AudioStreamBasicDescription *) format;
-    atomic_uint_fast64_t callbacks, frames, bytes, nonzero, muted, errors, lastTick;
+    atomic_uint_fast64_t callbacks, frames, bytes, nonzero, errors, lastTick;
     atomic_uint lastFrames, peak;
 } SAPContext;
 
@@ -42,7 +42,6 @@ static atomic_uint setCalls, callbackAttempts, lastScope, lastType, lastElement,
 static atomic_int lastSetStatus;
 static atomic_uint_fast64_t sampleBufferCalls, playerBufferCalls, compressedBuffers, extractionErrors;
 static _Atomic(SAPPCMObserver) observer;
-static atomic_uint_fast64_t muteUntil;
 static mach_timebase_info_data_t timebase;
 
 static OSStatus describeUnit(AudioUnit unit, AudioComponentDescription *description) {
@@ -168,11 +167,9 @@ static void processPCM(SAPContext *context, const AudioStreamBasicDescription *f
     if(frames && data->mNumberBuffers && data->mBuffers[0].mData && data->mBuffers[0].mDataByteSize)
         atomic_store_explicit(&context->receivedPCM,true,memory_order_relaxed);
     SAPPCMObserver callback = atomic_load_explicit(&observer, memory_order_acquire);
-    uint64_t deadline = atomic_load_explicit(&muteUntil, memory_order_relaxed);
-    bool muting=deadline && now<deadline;
-    // Keep timestamp/source availability for manual mute and source selection.
+    // Keep timestamp/source availability for source selection.
     // Idle playback does not scan samples, count bytes or copy audio.
-    if(!diagnostic && !callback && !muting)return;
+    if(!diagnostic && !callback)return;
     uint64_t bytes = 0;
     for (UInt32 i = 0; i < data->mNumberBuffers; ++i) {
         if (data->mBuffers[i].mData) bytes += availableBytes(&data->mBuffers[i], format, frames);
@@ -182,19 +179,12 @@ static void processPCM(SAPContext *context, const AudioStreamBasicDescription *f
         atomic_store_explicit(&context->lastFrames, frames, memory_order_relaxed);
         atomic_fetch_add_explicit(&context->bytes, bytes, memory_order_relaxed);
     }
-    bool canMute = formatSupported(format);
-    if (diagnostic && canMute) {
+    if (diagnostic && formatSupported(format)) {
         uint32_t level = peak(data, format, frames);
         atomic_store_explicit(&context->peak, level, memory_order_relaxed);
         if (level) atomic_fetch_add_explicit(&context->nonzero, 1, memory_order_relaxed);
     }
     if (writable && callback) callback(format, data, frames);
-    if (writable && canMute && bytes && deadline && now < deadline) {
-        for (UInt32 i = 0; i < data->mNumberBuffers; ++i) {
-            if (data->mBuffers[i].mData) memset(data->mBuffers[i].mData, 0, (size_t)availableBytes(&data->mBuffers[i], format, frames));
-        }
-        if(diagnostic)atomic_fetch_add_explicit(&context->muted, 1, memory_order_relaxed);
-    }
 }
 
 static OSStatus render(void *refcon, AudioUnitRenderActionFlags *flags,
@@ -211,8 +201,7 @@ static OSStatus render(void *refcon, AudioUnitRenderActionFlags *flags,
 }
 
 bool SAPWantsMutableBuffers(void) {
-    uint64_t deadline=atomic_load(&muteUntil);
-    return atomic_load(&observer) != NULL || (deadline && mach_absolute_time() < deadline);
+    return atomic_load(&observer) != NULL;
 }
 void SAPNoteObjCHooks(unsigned count) { atomic_store(&objcHooks, count); }
 void SAPNoteScheduledBuffer(bool sampleBuffer, uint32_t formatID) {
@@ -403,7 +392,6 @@ SAP_EXPORT void SpotifyAudioProbeReadSnapshot(SAPSnapshot *out) {
         out->frames += atomic_load(&context->frames);
         out->pcmBytes += atomic_load(&context->bytes);
         out->nonzeroCallbacks += atomic_load(&context->nonzero);
-        out->mutedCallbacks += atomic_load(&context->muted);
         out->callbackErrors += atomic_load(&context->errors);
         if (!selected || (atomic_load(&selected->retired) && !atomic_load(&context->retired))
             || (atomic_load(&selected->retired) == atomic_load(&context->retired)
@@ -425,20 +413,8 @@ SAP_EXPORT void SpotifyAudioProbeReadSnapshot(SAPSnapshot *out) {
         out->formatID = format->mFormatID;
         out->formatFlags = format->mFormatFlags;
         out->bitsPerChannel = format->mBitsPerChannel;
-        out->muteSupported = formatSupported(format);
     }
     out->pcmConfirmed = atomic_load(&selected->receivedPCM) && format && format->mFormatID == kAudioFormatLinearPCM;
-}
-
-SAP_EXPORT bool SpotifyAudioProbeMuteForSeconds(double seconds) {
-    if (seconds <= 0) { atomic_store(&muteUntil, 0); return true; }
-    SAPSnapshot snapshot; SpotifyAudioProbeReadSnapshot(&snapshot);
-    if (!snapshot.pcmConfirmed || !snapshot.muteSupported || snapshot.retired
-        || snapshot.lastCallbackAgeSeconds < 0 || snapshot.lastCallbackAgeSeconds > 2 || !timebase.numer) return false;
-    double nanos = fmin(seconds, 5.0) * 1000000000.0;
-    uint64_t ticks = (uint64_t)(nanos * timebase.denom / timebase.numer);
-    atomic_store(&muteUntil, mach_absolute_time() + ticks);
-    return true;
 }
 
 #ifdef SAP_TESTING

@@ -9,6 +9,14 @@
     });
     if(!finished && [self.stopTokens[uri]isEqual:token] && cancel)self.stopReadCancels[uri]=[^{finished=YES;cancel();} copy];
 }
+- (void)releaseUnsentStop:(NSString *)uri state:(NSMutableDictionary *)raw {
+    // A positively unissued/rejected command can be retried explicitly. Keep
+    // the original native download lease; uncertain mutations never use this.
+    raw[@"stopping"]=@NO;[raw removeObjectForKey:@"stop_removal_pending"];
+    self.operations[uri].stopped=NO;
+    [self.stopSentURIs removeObject:uri];[self.stopOperations removeObject:uri];[self.stopTokens removeObjectForKey:uri];
+    [self.forcedOfflineStops removeObject:uri];[self.stoppedItems removeObjectForKey:uri];[self.stoppedOrder removeObject:uri];
+}
 - (void)beginNativeStop:(NSString *)uri {
     if([self.stopOperations containsObject:uri])return;
     BOOL removalAlreadySent=[self.stopSentURIs containsObject:uri];
@@ -18,18 +26,27 @@
         if(![self.stopTokens[uri]isEqual:token])return;
         NSNumber *fresh=nil;NSArray *envelope=SAPProtoFields(data);
         if(envelope && !error.length && !SAPProtoNumber(envelope,2,0))for(NSDictionary *field in envelope)if([field[@"number"]unsignedIntValue]==1 && [field[@"wire"]unsignedIntValue]==2){NSArray *info=SAPProtoFields(SAPProtoData(SAPProtoFields(field[@"value"]),1));if([SAPProtoString(info,1)isEqual:uri] && SAPProtoNumber(info,2,0)<=5)fresh=@(SAPProtoNumber(info,2,0));}
-        if(![self.forcedOfflineStops containsObject:uri] && ([raw[@"native_state"]isEqual:@3] || [fresh isEqual:@3])){raw[@"native_state"]=@3;raw[@"stopping"]=@NO;[self.stopOperations removeObject:uri];[self.stopTokens removeObjectForKey:uri];[self.stopSentURIs removeObject:uri];[self noteCacheTouch:uri];[self.operations[uri] evaluate];[self publish];return;}
-        if(!fresh){raw[@"error"]=error?:@"Spotify did not confirm the current state. Stop was not sent; remaining albums are waiting.";[self.stopOperations removeObject:uri];[self.stopTokens removeObjectForKey:uri];[self publish];return;}
+        if(!removalAlreadySent && ![self.forcedOfflineStops containsObject:uri] && ([raw[@"native_state"]isEqual:@3] || [fresh isEqual:@3])){raw[@"native_state"]=@3;raw[@"stopping"]=@NO;[self.stopOperations removeObject:uri];[self.stopTokens removeObjectForKey:uri];[self.stopSentURIs removeObject:uri];[self noteCacheTouch:uri];[self.operations[uri] evaluate];[self publish];return;}
+        if(!fresh){
+            // No command was issued: make the row retryable, without releasing
+            // the still-active native download or replaying an earlier Remove.
+            if(!removalAlreadySent)[self releaseUnsentStop:uri state:raw];
+            raw[@"error"]=error?:@"Spotify did not confirm the current state. Stop was not sent; remaining albums are waiting.";[self.stopOperations removeObject:uri];[self.stopTokens removeObjectForKey:uri];[self publish];return;}
         if(removalAlreadySent) {
             // A previous Remove is never replayed, including after a pause.
             [self apply:data progress:NO];[self publish];return;
         }
-        [self.stopSentURIs addObject:uri];
+        [self.stopSentURIs addObject:uri];raw[@"stop_removal_pending"]=@YES;
         SAP_JOURNAL_ACTION(@"artist_album_stop_requested",@{@"album_uri":uri,@"automatic_replay":@NO});
-        contextCommand(uri,NO,^(NSData *reply,NSString *failure){
+        contextCommandWithDisposition(uri,NO,^(NSData *reply,NSString *failure,SAPCommandInvocationDisposition disposition){
             if(![self.stopTokens[uri]isEqual:token])return;
             [self.stopOperations removeObject:uri];[self noteCacheTouch:uri];uint64_t code=0;NSArray *fields=contextCommandFields(reply,uri,&code);
-            if(failure.length || !fields || code){raw[@"error"]=failure?:@"Spotify did not confirm the stop command. Waiting for native status.";[self publish];return;}
+            if(disposition==SAPCommandNotInvoked || (!failure.length && fields && code)) {
+                [self releaseUnsentStop:uri state:raw];
+                raw[@"error"]=failure.length?failure:@"Spotify rejected Stop. Tap again to retry.";
+                [self.operations[uri] evaluate];[self publish];return;
+            }
+            if(disposition!=SAPCommandInvoked || failure.length || !fields || code){raw[@"error"]=failure?:@"Spotify did not confirm the stop command. Waiting for native status.";[self publish];return;}
             // Removal acknowledgment is not a terminal native download state.
             // Reconcile once; subscriptions deliver any later transition.
             [self readStopURI:uri token:token completion:^(NSData *freshData,NSString *freshError){
@@ -56,7 +73,7 @@
         operation.stopped=YES;raw[@"stopping"]=@YES;
         if(operation.commandPending){[self publish];return;}
         if(!operation.downloadSent && ![self.forcedOfflineStops containsObject:uri]){[operation finish:nil];return;}
-        if([raw[@"native_state"]isEqual:@3] && ![self.forcedOfflineStops containsObject:uri]){[operation finish:nil];return;}
+        if([raw[@"native_state"]isEqual:@3] && ![raw[@"stop_removal_pending"]boolValue] && ![self.forcedOfflineStops containsObject:uri]){[operation finish:nil];return;}
         [self beginNativeStop:uri];return;
     }
     if([self.forcedOfflineStops containsObject:uri] || (![raw[@"native_state"]isEqual:@3] && (activeNative(raw) || [raw[@"download_requested"]boolValue])))[self beginNativeStop:uri];

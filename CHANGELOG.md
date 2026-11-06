@@ -1,5 +1,14 @@
 # Changelog
 
+## 2026-11-06 — Pixie Manager v1.4
+
+- Export downloaded tracks to files: M4A (default) or Ogg
+- Share audio files straight from the Spotify share menu
+- Downloaded tracks manager: browse by artist and release, select, export or delete
+- Faster artist downloads
+
+Source update only. No IPA or DEB is uploaded with this update.
+
 ## 2026-10-27 — Pixie Manager v1.3
 
 - Refactored Pixie Manager code

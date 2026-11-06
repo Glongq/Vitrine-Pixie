@@ -79,9 +79,13 @@ NSString *SAPArtistArtworkIdentifier(NSString *value) {
         NSString *url=SAPPlaylistArtworkURL(uri);
         return [self loadURL:url completion:^(UIImage *image){SAP_JOURNAL_ACTION(@"playlist_artwork_result",@{@"uri":uri,@"route":@"spotify_mosaic_cdn",@"url":url,@"image_received":@(image!=nil),@"error":image?@"":@"Mosaic image unavailable"});if(completion)completion(image);}];
     }
+    return [self loadImageURI:uri maximumPixels:128 completion:completion];
+}
+- (dispatch_block_t)loadImageURI:(NSString *)uri maximumPixels:(NSUInteger)pixels completion:(void (^)(UIImage *))completion {
+    pixels=MAX(1,MIN(pixels,1024));
     SAPArtistArtworkConsumer *consumer=[SAPArtistArtworkConsumer new];consumer.completion=completion;
     if(![uri isKindOfClass:NSString.class] || !uri.length || uri.length>4096 || (![uri hasPrefix:@"spotify:"] && ![uri hasPrefix:@"https://"])) {[self complete:@[consumer] image:nil];return ^{consumer.cancelled=YES;};}
-    NSString *identifier=[@"native:" stringByAppendingString:uri],*token=NSUUID.UUID.UUIDString;
+    NSString *identifier=pixels==128?[@"native:" stringByAppendingString:uri]:[NSString stringWithFormat:@"native:%lu:%@",(unsigned long)pixels,uri],*token=NSUUID.UUID.UUIDString;
     dispatch_async(self.queue,^{
         if(consumer.cancelled)return;UIImage *cached=[self.cache objectForKey:identifier];if(cached){[self complete:@[consumer] image:cached];return;}
         SAPArtistArtworkRequest *request=self.inFlight[identifier];if(request){if(request.completions.count<64)request.completions[token]=consumer;else[self complete:@[consumer] image:nil];return;}
@@ -89,14 +93,14 @@ NSString *SAPArtistArtworkIdentifier(NSString *value) {
         request=[SAPArtistArtworkRequest new];request.identifier=identifier;request.completions=[@{token:consumer}mutableCopy];self.inFlight[identifier]=request;
         // Verified es_image.proto: GetImageParams.uri=1, resolve.size=2.1;
         // ImageData.error=1, data=3. Spotify resolves mosaics and custom covers.
-        NSMutableData *size=[SAPProtoInteger(1,128)mutableCopy];[size appendData:SAPProtoInteger(2,128)];
+        NSMutableData *size=[SAPProtoInteger(1,pixels)mutableCopy];[size appendData:SAPProtoInteger(2,pixels)];
         NSMutableData *payload=[SAPProtoBytes(1,[uri dataUsingEncoding:NSUTF8StringEncoding])mutableCopy];[payload appendData:SAPProtoBytes(2,SAPProtoBytes(1,size))];
         request.cancelNative=SAPCallReadOnlyServiceCancellable(@"spotify.image.esperanto.proto.Image",@"GetImage",payload,^(NSData *data,NSString *error){
             dispatch_async(self.queue,^{
                 if(self.inFlight[identifier]!=request)return;request.cancelNative=nil;[self.inFlight removeObjectForKey:identifier];
                 NSArray *fields=data.length<=SAPArtistArtworkMaximumBytes+1024?SAPProtoFields(data):nil;uint64_t code=SAPProtoNumber(fields,1,0);
-                UIImage *image=!error.length && fields && !code?[self thumbnailForData:SAPProtoData(fields,3)]:nil;
-                if(image){NSUInteger cost=(NSUInteger)(image.size.width*image.scale)*(NSUInteger)(image.size.height*image.scale)*4;[self.cache setObject:image forKey:identifier cost:cost];}
+                UIImage *image=!error.length && fields && !code?[self thumbnailForData:SAPProtoData(fields,3) maximumPixels:pixels]:nil;
+                if(image && pixels==128){NSUInteger cost=(NSUInteger)(image.size.width*image.scale)*(NSUInteger)(image.size.height*image.scale)*4;[self.cache setObject:image forKey:identifier cost:cost];}
                 SAP_JOURNAL_ACTION(@"playlist_artwork_result",@{@"uri":uri,@"route":@"native_image_service",@"image_received":@(image!=nil),@"native_error_code":@(code),@"error":error?:(!fields?@"Invalid native image response":image?@"":@"Native image unavailable")});
                 [self complete:request.completions.allValues image:image];
             });
@@ -167,13 +171,16 @@ NSString *SAPArtistArtworkIdentifier(NSString *value) {
     [request.data appendData:data];
 }
 - (UIImage *)thumbnailForData:(NSData *)data {
+    return [self thumbnailForData:data maximumPixels:SAPArtistArtworkMaximumPixels];
+}
+- (UIImage *)thumbnailForData:(NSData *)data maximumPixels:(NSUInteger)pixels {
 #ifdef SAP_TESTING
     NSCAssert(!NSThread.isMainThread,@"Artist artwork decoding must stay off the main thread");
 #endif
     if(!data.length || data.length>SAPArtistArtworkMaximumBytes)return nil;
     CGImageSourceRef source=CGImageSourceCreateWithData((__bridge CFDataRef)data,NULL);if(!source)return nil;
     NSDictionary *options=@{(id)kCGImageSourceCreateThumbnailFromImageAlways:@YES,
-        (id)kCGImageSourceThumbnailMaxPixelSize:@(SAPArtistArtworkMaximumPixels),
+        (id)kCGImageSourceThumbnailMaxPixelSize:@(pixels),
         (id)kCGImageSourceShouldCacheImmediately:@YES};
     CGImageRef image=CGImageSourceCreateThumbnailAtIndex(source,0,(__bridge CFDictionaryRef)options);CFRelease(source);
     if(!image)return nil;UIImage *thumbnail=[UIImage imageWithCGImage:image scale:1.0 orientation:UIImageOrientationUp];CFRelease(image);return thumbnail;

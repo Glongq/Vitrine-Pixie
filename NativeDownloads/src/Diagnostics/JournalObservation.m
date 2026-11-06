@@ -175,18 +175,14 @@ static NSArray<NSString *> *entityList(NSUInteger limit) {
     os_unfair_lock_unlock(&SAPJournalStateStorage.lock);
     return keys.count > limit ? [keys subarrayWithRange:NSMakeRange(0, limit)] : keys;
 }
-// Сначала то, что ещё не доехало: незавершённые, затем сбойные, затем невиданные.
+// Only tracks still in progress. Every other known track used to be re-read
+// every 5 s (an open artist catalog made that thousands of items per tick).
 static NSArray<NSString *> *urisToQuery(void) {
-    NSMutableArray *pending = [NSMutableArray array], *failed = [NSMutableArray array], *rest = [NSMutableArray array];
+    NSMutableArray *result = [NSMutableArray array];
     os_unfair_lock_lock(&SAPJournalStateStorage.lock);
-    for (SAPTrack *record in SAPJournalStateStorage.tracks.allValues) {
-        if (!record->seen || pendingState(record->state)) [pending addObject:record->uri];
-        else if (failedState(record->state) || record->state == 0) [failed addObject:record->uri];
-        else [rest addObject:record->uri];
-    }
+    for (SAPTrack *record in SAPJournalStateStorage.tracks.allValues)
+        if (SAPJournalNeedsPoll(record->seen, record->state, record->addRequests)) [result addObject:record->uri];
     os_unfair_lock_unlock(&SAPJournalStateStorage.lock);
-    NSMutableArray *result = [pending mutableCopy];
-    [result addObjectsFromArray:failed]; [result addObjectsFromArray:rest];
     NSUInteger limit = chunkSize * maximumChunks;
     return result.count > limit ? [result subarrayWithRange:NSMakeRange(0, limit)] : result;
 }

@@ -1,6 +1,6 @@
 # Pixie integration map
 
-Current target: Vitrine 1.0.0-beta.16, Spotify 9.1.90, Pixie 1.3.
+Current target: Vitrine 1.0.0-beta.16, Spotify 9.1.90, Pixie 1.4.
 This map describes the existing implementation; it does not introduce a new API.
 
 ## Start here
@@ -44,6 +44,12 @@ Paths below are relative to `src/`.
 | Guarded native manager integration | `Spotify/NativeOfflineAdapter.m`; API: `Public/NativeOffline.h` |
 | Transport lifetime, hooks, reads, commands | `Spotify/SpotifyTransportRegistry.m`, `SpotifyTransportHooks.m`, `SpotifyServiceCalls.m`, `SpotifyCommands.m` |
 | Protobuf wire helpers | `Spotify/WireProto.h`, `Spotify/WireProto.m` |
+| Downloaded tracks manager (list, selection, deletion, progress) | `Library/OfflineLibraryUI.m`, `OfflineLibraryCatalog.m`, `OfflineLibraryDelete.m`, `OfflineLibraryProgress.m`, `OfflineLibraryChrome.m` |
+| Export queue and packaging of selected tracks | `Library/OfflineLibraryExport.m`, `OfflineLibraryPackage.m` |
+| Export of one track from Spotify's offline cache | `Export/TrackCacheExport.m` (cache file, storage layer, media layer, validated Ogg); job and entry points in `Export/TrackExport.m`; API: `Export/TrackExport.h` |
+| M4A conversion and tagging | `Export/M4AExport.m`, `Export/M4AConversionQueue.m`, `Export/ExportArtwork.m` |
+| Cache mapping, storage keys and media-key store | `Export/NativeCacheMap.m`, `CacheStorageKey.m`, `ExportCacheIndex.m`, `ExportKeyStore.m`, `ExportKeyVault.m` |
+| Share menu: files instead of links | `Export/NativeShareHooks.m`, `ShareFilePromise.m`, `ShareCompletionRelay.m`, `NativeShareBridge.swift` |
 | Diagnostics enabled preference | `Diagnostics/DiagnosticsPreferences.m`; API: `Public/Diagnostics.h` |
 | Journal state, observation and files | `Diagnostics/TrackJournal.m`, `Journal*.m` |
 | Combined support-log format | `Diagnostics/SupportLogSerializer.m`; API: `Public/SupportLog.h` |
