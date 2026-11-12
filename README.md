@@ -1,4 +1,3 @@
-# Vitrine + Pixie Download Manager
 
 Liquid Glass Spotify with **Pixie Download Manager**. Based on [Vitrine](https://github.com/My-Name-Is-Jeff/vitrine), with native offline downloads and a download manager.
 
